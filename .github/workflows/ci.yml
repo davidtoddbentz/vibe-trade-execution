@@ -25,10 +25,14 @@ jobs:
         python-version: "3.12"
 
     - name: Configure git for private repos
-      run: git config --global url."https://${{ secrets.PAT_PRIVATE_REPOS }}@github.com/".insteadOf "https://github.com/"
+      run: |
+        git config --global url."https://${{ secrets.PAT_PRIVATE_REPOS }}@github.com/".insteadOf "https://github.com/"
+        git config --global --list | grep url
 
     - name: Install dependencies
       run: make install
+      env:
+        GIT_AUTH_TOKEN: ${{ secrets.PAT_PRIVATE_REPOS }}
 
     - name: Lint with ruff
       run: uv run ruff check .
@@ -54,10 +58,14 @@ jobs:
         python-version: "3.12"
 
     - name: Configure git for private repos
-      run: git config --global url."https://${{ secrets.PAT_PRIVATE_REPOS }}@github.com/".insteadOf "https://github.com/"
+      run: |
+        git config --global url."https://${{ secrets.PAT_PRIVATE_REPOS }}@github.com/".insteadOf "https://github.com/"
+        git config --global --list | grep url
 
     - name: Install dependencies
       run: make install
+      env:
+        GIT_AUTH_TOKEN: ${{ secrets.PAT_PRIVATE_REPOS }}
 
     - name: Pull LEAN Docker image
       run: docker pull quantconnect/lean:latest
