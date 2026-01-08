@@ -9,7 +9,10 @@ This service:
 6. Returns results
 """
 
+import json
 import logging
+import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
@@ -63,7 +66,6 @@ class BacktestService:
         """
         self.gcs_bucket = gcs_bucket
         self.lean_engine = LeanEngine(lean_image=lean_image)
-        self.ir_translator = IRTranslator()
 
     def run_backtest(
         self,
@@ -89,9 +91,10 @@ class BacktestService:
 
             # Step 1: Translate strategy to LEAN algorithm
             logger.info("Translating strategy to IR...")
-            ir_strategy = self.ir_translator.translate(strategy, cards)
+            translator = IRTranslator(strategy, cards)
+            ir_result = translator.translate()
 
-            if not ir_strategy:
+            if not ir_result or not ir_result.ir:
                 return BacktestResult(
                     status="error",
                     strategy_id=request.strategy_id,
@@ -103,7 +106,7 @@ class BacktestService:
             # Step 2: Generate LEAN algorithm code
             logger.info("Generating LEAN algorithm code...")
             algorithm_code = self._generate_lean_algorithm(
-                ir_strategy,
+                ir_result.ir,
                 request.symbol,
                 request.start_date,
                 request.end_date,
@@ -139,6 +142,9 @@ class BacktestService:
                 data_dir = temp_path / "Data"
                 exporter = LeanDataExporter(data_dir)
                 exporter.export_candles(candles, request.symbol)
+
+                # Copy required LEAN data files (symbol-properties, market-hours)
+                self._copy_lean_data_files(data_dir)
 
                 # Write algorithm
                 algo_dir = temp_path / "Algorithms"
@@ -281,9 +287,6 @@ class BacktestAlgorithm(QCAlgorithm):
         algorithm_name: str,
     ) -> dict[str, Any]:
         """Run LEAN Docker container."""
-        import subprocess
-        import json
-
         cmd = [
             "docker",
             "run",
@@ -350,3 +353,27 @@ class BacktestAlgorithm(QCAlgorithm):
                 "status": "error",
                 "error": str(e),
             }
+
+    def _copy_lean_data_files(self, data_dir: Path) -> None:
+        """Copy required LEAN data files to the data directory.
+
+        LEAN requires symbol-properties and market-hours databases
+        to be present in the Data folder.
+        """
+        # Find the lean data directory relative to this file
+        service_dir = Path(__file__).parent
+        lean_data_dir = service_dir.parent.parent / "lean" / "data"
+
+        # Copy symbol-properties
+        src_symbol_props = lean_data_dir / "symbol-properties"
+        if src_symbol_props.exists():
+            dst_symbol_props = data_dir / "symbol-properties"
+            shutil.copytree(src_symbol_props, dst_symbol_props)
+            logger.debug(f"Copied symbol-properties to {dst_symbol_props}")
+
+        # Copy market-hours
+        src_market_hours = lean_data_dir / "market-hours"
+        if src_market_hours.exists():
+            dst_market_hours = data_dir / "market-hours"
+            shutil.copytree(src_market_hours, dst_market_hours)
+            logger.debug(f"Copied market-hours to {dst_market_hours}")
