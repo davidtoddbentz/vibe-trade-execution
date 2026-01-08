@@ -1,7 +1,9 @@
-.PHONY: install locally test lint format format-check check ci clean backtest lean-setup lean-test lean-backtest lean-list lean-start lean-stop lean-logs build-image
+.PHONY: install locally test test-cov lint lint-fix format format-check check ci clean backtest lean-setup lean-test lean-backtest lean-list lean-start lean-stop lean-logs build-image
 
 install:
-	uv sync --all-groups
+	@echo "📦 Installing dependencies..."
+	@uv sync --all-groups
+	@echo "✅ All dependencies installed successfully!"
 
 # Setup for local development: install deps, fix linting, and format code
 locally: install lint-fix format

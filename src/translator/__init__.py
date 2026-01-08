@@ -15,16 +15,16 @@ All evaluation logic is duplicated in two places:
 """
 
 # IR-based translator
-from .ir import StrategyIR
-from .ir_translator import IRTranslator, IRTranslationResult
 from .evaluator import (
-    ConditionEvaluator,
-    ValueResolver,
     ActionExecutor,
-    StateOperator,
+    ConditionEvaluator,
     EvalContext,
     ExecContext,
+    StateOperator,
+    ValueResolver,
 )
+from .ir import StrategyIR
+from .ir_translator import IRTranslationResult, IRTranslator
 
 __all__ = [
     "IRTranslator",

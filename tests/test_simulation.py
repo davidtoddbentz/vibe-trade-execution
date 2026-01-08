@@ -13,18 +13,18 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
-
 from vibe_trade_shared.models import Card, Strategy
 from vibe_trade_shared.models.strategy import Attachment
 
+from src.translator.evaluator import ConditionEvaluator, EvalContext, StateOperator
 from src.translator.ir import (
     # Conditions
     AllOfCondition,
     CompareCondition,
     CompareOp,
     Condition,
-    # Actions
-    SetHoldingsAction,
+    # Strategy components
+    EntryRule,
     # Values
     ExpressionValue,
     IndicatorProperty,
@@ -33,16 +33,14 @@ from src.translator.ir import (
     LiteralValue,
     PriceField,
     PriceValue,
+    Resolution,
+    # Actions
+    SetHoldingsAction,
+    StrategyIR,
     TimeValue,
     VolumeValue,
-    # Strategy components
-    EntryRule,
-    Resolution,
-    StrategyIR,
 )
 from src.translator.ir_translator import IRTranslator
-from src.translator.evaluator import ConditionEvaluator, EvalContext, StateOperator
-
 
 # =============================================================================
 # Test Infrastructure
@@ -52,6 +50,7 @@ from src.translator.evaluator import ConditionEvaluator, EvalContext, StateOpera
 @dataclass
 class MockBar:
     """Mock price bar for simulation."""
+
     open: float
     high: float
     low: float
@@ -62,12 +61,14 @@ class MockBar:
 @dataclass
 class MockIndicatorCurrent:
     """Mock for indicator.Current."""
+
     Value: float
 
 
 @dataclass
 class MockIndicator:
     """Mock for a simple indicator."""
+
     current_value: float
     is_ready: bool = True
 
@@ -83,6 +84,7 @@ class MockIndicator:
 @dataclass
 class MockBandIndicator:
     """Mock for band indicators (BB, KC)."""
+
     upper: float
     middle: float
     lower: float
@@ -108,6 +110,7 @@ class MockBandIndicator:
 @dataclass
 class Signal:
     """Expected signal at a specific bar."""
+
     bar_index: int
     signal_type: str  # "entry" or "exit"
     reason: str = ""
@@ -116,6 +119,7 @@ class Signal:
 @dataclass
 class BarData:
     """Bar data with indicator values for a single bar."""
+
     bar: MockBar
     indicators: dict[str, Any]  # indicator_id -> value or MockIndicator
     hour: int = 12  # Default midday
@@ -126,6 +130,7 @@ class BarData:
 @dataclass
 class SimulationScenario:
     """A complete test scenario."""
+
     name: str
     description: str
     bars: list[BarData]
@@ -135,6 +140,7 @@ class SimulationScenario:
 
 class MockPriceBar:
     """Adapter for MockBar to match PriceBarProtocol."""
+
     def __init__(self, bar: MockBar):
         self._bar = bar
 
@@ -227,7 +233,7 @@ def assert_signals_match(expected: list[Signal], actual: list[Signal], scenario_
         f"Actual: {actual}"
     )
 
-    for exp, act in zip(expected, actual):
+    for exp, act in zip(expected, actual, strict=False):
         assert exp.bar_index == act.bar_index, (
             f"[{scenario_name}] Signal at wrong bar. "
             f"Expected {exp.signal_type} at bar {exp.bar_index}, "
@@ -270,7 +276,13 @@ class TestEmaCrossoverSimulation:
                     "event": {
                         "condition": {
                             "type": "regime",
-                            "regime": {"metric": "trend_ma_relation", "op": ">", "value": 0, "ma_fast": 20, "ma_slow": 50},
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
                         }
                     },
                     "action": {"direction": "long"},
@@ -286,7 +298,13 @@ class TestEmaCrossoverSimulation:
                     "event": {
                         "condition": {
                             "type": "regime",
-                            "regime": {"metric": "trend_ma_relation", "op": "<", "value": 0, "ma_fast": 20, "ma_slow": 50},
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": "<",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
                         }
                     },
                     "action": {"mode": "close"},
@@ -395,15 +413,26 @@ class TestEmaCrossoverSimulation:
             description="Two complete entry/exit cycles",
             bars=[
                 # Cycle 1: Entry
-                BarData(bar=MockBar(100, 101, 99, 100), indicators={"ema_fast": 102.0, "ema_slow": 100.0}),
+                BarData(
+                    bar=MockBar(100, 101, 99, 100),
+                    indicators={"ema_fast": 102.0, "ema_slow": 100.0},
+                ),
                 # Cycle 1: Exit
-                BarData(bar=MockBar(100, 101, 98, 98), indicators={"ema_fast": 98.0, "ema_slow": 100.0}),
+                BarData(
+                    bar=MockBar(100, 101, 98, 98), indicators={"ema_fast": 98.0, "ema_slow": 100.0}
+                ),
                 # No signal (bearish, not invested)
-                BarData(bar=MockBar(98, 99, 97, 97), indicators={"ema_fast": 96.0, "ema_slow": 99.0}),
+                BarData(
+                    bar=MockBar(98, 99, 97, 97), indicators={"ema_fast": 96.0, "ema_slow": 99.0}
+                ),
                 # Cycle 2: Entry
-                BarData(bar=MockBar(97, 102, 97, 101), indicators={"ema_fast": 101.0, "ema_slow": 99.0}),
+                BarData(
+                    bar=MockBar(97, 102, 97, 101), indicators={"ema_fast": 101.0, "ema_slow": 99.0}
+                ),
                 # Cycle 2: Exit
-                BarData(bar=MockBar(101, 101, 95, 96), indicators={"ema_fast": 97.0, "ema_slow": 99.0}),
+                BarData(
+                    bar=MockBar(101, 101, 95, 96), indicators={"ema_fast": 97.0, "ema_slow": 99.0}
+                ),
             ],
             expected_signals=[
                 Signal(bar_index=0, signal_type="entry"),
@@ -443,7 +472,13 @@ class TestEmaCrossoverShortSimulation:
                     "event": {
                         "condition": {
                             "type": "regime",
-                            "regime": {"metric": "trend_ma_relation", "op": "<", "value": 0, "ma_fast": 20, "ma_slow": 50},
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": "<",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
                         }
                     },
                     "action": {"direction": "short"},
@@ -459,7 +494,13 @@ class TestEmaCrossoverShortSimulation:
                     "event": {
                         "condition": {
                             "type": "regime",
-                            "regime": {"metric": "trend_ma_relation", "op": ">", "value": 0, "ma_fast": 20, "ma_slow": 50},
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
                         }
                     },
                     "action": {"mode": "close"},
@@ -533,7 +574,12 @@ class TestReturnThresholdSimulation:
                     "event": {
                         "condition": {
                             "type": "regime",
-                            "regime": {"metric": "ret_pct", "op": "<", "value": -5.0, "lookback_bars": 14},
+                            "regime": {
+                                "metric": "ret_pct",
+                                "op": "<",
+                                "value": -5.0,
+                                "lookback_bars": 14,
+                            },
                         }
                     },
                     "action": {"direction": "long"},
@@ -583,10 +629,10 @@ class TestReturnThresholdSimulation:
             name="Above threshold",
             description="ROC stays above -5%",
             bars=[
-                BarData(bar=MockBar(100, 101, 99, 100), indicators={"roc": 0.02}),   # +2%
-                BarData(bar=MockBar(100, 102, 99, 101), indicators={"roc": 0.01}),   # +1%
-                BarData(bar=MockBar(101, 101, 98, 99), indicators={"roc": -0.02}),   # -2%
-                BarData(bar=MockBar(99, 100, 97, 98), indicators={"roc": -0.04}),    # -4%
+                BarData(bar=MockBar(100, 101, 99, 100), indicators={"roc": 0.02}),  # +2%
+                BarData(bar=MockBar(100, 102, 99, 101), indicators={"roc": 0.01}),  # +1%
+                BarData(bar=MockBar(101, 101, 98, 99), indicators={"roc": -0.02}),  # -2%
+                BarData(bar=MockBar(99, 100, 97, 98), indicators={"roc": -0.04}),  # -4%
             ],
             expected_signals=[],
         )
@@ -666,9 +712,15 @@ class TestBreakoutSimulation:
             name="No breakout",
             description="Price stays below 20-bar high",
             bars=[
-                BarData(bar=MockBar(100, 102, 99, 101), indicators={"highest": 110.0, "lowest": 95.0}),
-                BarData(bar=MockBar(101, 104, 100, 103), indicators={"highest": 110.0, "lowest": 95.0}),
-                BarData(bar=MockBar(103, 108, 102, 107), indicators={"highest": 110.0, "lowest": 95.0}),
+                BarData(
+                    bar=MockBar(100, 102, 99, 101), indicators={"highest": 110.0, "lowest": 95.0}
+                ),
+                BarData(
+                    bar=MockBar(101, 104, 100, 103), indicators={"highest": 110.0, "lowest": 95.0}
+                ),
+                BarData(
+                    bar=MockBar(103, 108, 102, 107), indicators={"highest": 110.0, "lowest": 95.0}
+                ),
             ],
             expected_signals=[],
         )
@@ -926,11 +978,22 @@ class TestCompositeConditionSimulation:
                             "allOf": [
                                 {
                                     "type": "regime",
-                                    "regime": {"metric": "trend_ma_relation", "op": ">", "value": 0, "ma_fast": 20, "ma_slow": 50},
+                                    "regime": {
+                                        "metric": "trend_ma_relation",
+                                        "op": ">",
+                                        "value": 0,
+                                        "ma_fast": 20,
+                                        "ma_slow": 50,
+                                    },
                                 },
                                 {
                                     "type": "regime",
-                                    "regime": {"metric": "ret_pct", "op": "<", "value": -2.0, "lookback_bars": 5},
+                                    "regime": {
+                                        "metric": "ret_pct",
+                                        "op": "<",
+                                        "value": -2.0,
+                                        "lookback_bars": 5,
+                                    },
                                 },
                             ],
                         }
@@ -953,17 +1016,29 @@ class TestCompositeConditionSimulation:
                 # Bar 0: Only uptrend (no entry) - ROC = -1% > -2%
                 BarData(
                     bar=MockBar(100, 101, 99, 100),
-                    indicators={"ema_fast": 102.0, "ema_slow": 100.0, "roc": -0.01},  # -1% as decimal
+                    indicators={
+                        "ema_fast": 102.0,
+                        "ema_slow": 100.0,
+                        "roc": -0.01,
+                    },  # -1% as decimal
                 ),
                 # Bar 1: Only oversold (no entry) - downtrend
                 BarData(
                     bar=MockBar(100, 100, 96, 97),
-                    indicators={"ema_fast": 98.0, "ema_slow": 100.0, "roc": -0.03},  # -3% as decimal
+                    indicators={
+                        "ema_fast": 98.0,
+                        "ema_slow": 100.0,
+                        "roc": -0.03,
+                    },  # -3% as decimal
                 ),
                 # Bar 2: BOTH uptrend AND oversold (ENTRY!)
                 BarData(
                     bar=MockBar(97, 98, 95, 96),
-                    indicators={"ema_fast": 101.0, "ema_slow": 100.0, "roc": -0.03},  # -3% as decimal
+                    indicators={
+                        "ema_fast": 101.0,
+                        "ema_slow": 100.0,
+                        "roc": -0.03,
+                    },  # -3% as decimal
                 ),
             ],
             expected_signals=[Signal(bar_index=2, signal_type="entry")],
@@ -997,11 +1072,21 @@ class TestCompositeConditionSimulation:
                             "anyOf": [
                                 {
                                     "type": "regime",
-                                    "regime": {"metric": "ret_pct", "op": "<", "value": -5.0, "lookback_bars": 10},
+                                    "regime": {
+                                        "metric": "ret_pct",
+                                        "op": "<",
+                                        "value": -5.0,
+                                        "lookback_bars": 10,
+                                    },
                                 },
                                 {
                                     "type": "regime",
-                                    "regime": {"metric": "ret_pct", "op": ">", "value": 5.0, "lookback_bars": 10},
+                                    "regime": {
+                                        "metric": "ret_pct",
+                                        "op": ">",
+                                        "value": 5.0,
+                                        "lookback_bars": 10,
+                                    },
                                 },
                             ],
                         }
@@ -1021,7 +1106,9 @@ class TestCompositeConditionSimulation:
             name="AnyOf first true",
             description="Oversold condition triggers entry",
             bars=[
-                BarData(bar=MockBar(100, 100, 92, 93), indicators={"roc": -0.07}),  # -7% < -5% (as decimal)
+                BarData(
+                    bar=MockBar(100, 100, 92, 93), indicators={"roc": -0.07}
+                ),  # -7% < -5% (as decimal)
             ],
             expected_signals=[Signal(bar_index=0, signal_type="entry")],
         )
@@ -1049,8 +1136,10 @@ class TestCompositeConditionSimulation:
             name="AnyOf neither true",
             description="ROC in normal range",
             bars=[
-                BarData(bar=MockBar(100, 102, 99, 101), indicators={"roc": 0.02}),      # +2% as decimal
-                BarData(bar=MockBar(101, 103, 100, 102), indicators={"roc": -0.01}),  # -1% as decimal
+                BarData(bar=MockBar(100, 102, 99, 101), indicators={"roc": 0.02}),  # +2% as decimal
+                BarData(
+                    bar=MockBar(101, 103, 100, 102), indicators={"roc": -0.01}
+                ),  # -1% as decimal
             ],
             expected_signals=[],
         )

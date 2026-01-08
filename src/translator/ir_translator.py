@@ -10,10 +10,11 @@ from typing import Any
 from vibe_trade_shared.models import Card, Strategy
 
 from .archetype_expander import ArchetypeExpander
-
 from .ir import (
     ADX,
     ATR,
+    EMA,
+    VWAP,
     AllOfCondition,
     AnyOfCondition,
     BandField,
@@ -23,7 +24,6 @@ from .ir import (
     CompareOp,
     Condition,
     DonchianChannel,
-    EMA,
     EntryRule,
     ExitRule,
     ExpressionValue,
@@ -33,12 +33,11 @@ from .ir import (
     IndicatorProperty,
     IndicatorPropertyValue,
     IndicatorValue,
-    IncrementStateOp,
     KeltnerChannel,
-    MaxStateOp,
     LiquidateAction,
     LiteralValue,
     Maximum,
+    MaxStateOp,
     Minimum,
     NotCondition,
     PriceField,
@@ -48,22 +47,19 @@ from .ir import (
     Resolution,
     RollingMinMax,
     RollingWindow,
-    SMA,
     SetHoldingsAction,
-    TimeValue,
-    VolumeValue,
-    VolumeSMA,
-    VWAP,
     SetStateFromConditionOp,
-    SqueezeCondition,
-    TimeFilterCondition,
     SetStateOp,
+    SqueezeCondition,
     StateOp,
     StateType,
     StateValue,
     StateVar,
     StrategyIR,
-    ValueRef,
+    TimeFilterCondition,
+    TimeValue,
+    VolumeSMA,
+    VolumeValue,
 )
 
 
@@ -299,9 +295,9 @@ class IRTranslator:
         direction = action.get("direction", "long")
 
         # Get band parameters
-        band_type = dip_band.get("band", "bollinger")
-        band_length = dip_band.get("length", 20)
-        band_mult = dip_band.get("mult", 2.0)
+        dip_band.get("band", "bollinger")
+        dip_band.get("length", 20)
+        dip_band.get("mult", 2.0)
 
         # Get trend gate parameters
         fast_ma = trend_gate.get("fast", 20)
@@ -417,9 +413,7 @@ class IRTranslator:
             card_dict = {"type_id": archetype, "slots": slots}
             expanded, provenance = self._expander.expand(card_dict)
             if provenance:
-                self.warnings.append(
-                    f"Expanded {archetype} -> {expanded['type_id']}"
-                )
+                self.warnings.append(f"Expanded {archetype} -> {expanded['type_id']}")
                 archetype = expanded["type_id"]
                 slots = expanded["slots"]
 
@@ -520,10 +514,14 @@ class IRTranslator:
 
         # Add indicator
         if band_type == "bollinger":
-            self._add_indicator(BollingerBands(id="exit_bb", period=band_length, multiplier=band_mult))
+            self._add_indicator(
+                BollingerBands(id="exit_bb", period=band_length, multiplier=band_mult)
+            )
             band_id = "exit_bb"
         else:
-            self._add_indicator(KeltnerChannel(id="exit_kc", period=band_length, multiplier=band_mult))
+            self._add_indicator(
+                KeltnerChannel(id="exit_kc", period=band_length, multiplier=band_mult)
+            )
             band_id = "exit_kc"
 
         band_field = BandField.UPPER if edge == "upper" else BandField.LOWER
@@ -755,7 +753,9 @@ class IRTranslator:
             self._add_indicator(BollingerBands(id="bb", period=period, multiplier=mult))
             # BandWidth = (Upper - Lower) / Middle * 100
             return CompareCondition(
-                left=IndicatorPropertyValue(indicator_id="bb", property=IndicatorProperty.BAND_WIDTH),
+                left=IndicatorPropertyValue(
+                    indicator_id="bb", property=IndicatorProperty.BAND_WIDTH
+                ),
                 op=op,
                 right=LiteralValue(value=float(value)),
             )
@@ -790,31 +790,41 @@ class IRTranslator:
             if value == "quiet":
                 # BB width below low threshold
                 return CompareCondition(
-                    left=IndicatorPropertyValue(indicator_id="bb", property=IndicatorProperty.BAND_WIDTH),
+                    left=IndicatorPropertyValue(
+                        indicator_id="bb", property=IndicatorProperty.BAND_WIDTH
+                    ),
                     op=CompareOp.LT,
                     right=LiteralValue(value=float(low_thresh)),
                 )
             elif value == "high":
                 # BB width above high threshold
                 return CompareCondition(
-                    left=IndicatorPropertyValue(indicator_id="bb", property=IndicatorProperty.BAND_WIDTH),
+                    left=IndicatorPropertyValue(
+                        indicator_id="bb", property=IndicatorProperty.BAND_WIDTH
+                    ),
                     op=CompareOp.GT,
                     right=LiteralValue(value=float(high_thresh)),
                 )
             else:  # "normal"
                 # BB width between thresholds
-                return AllOfCondition(conditions=[
-                    CompareCondition(
-                        left=IndicatorPropertyValue(indicator_id="bb", property=IndicatorProperty.BAND_WIDTH),
-                        op=CompareOp.GTE,
-                        right=LiteralValue(value=float(low_thresh)),
-                    ),
-                    CompareCondition(
-                        left=IndicatorPropertyValue(indicator_id="bb", property=IndicatorProperty.BAND_WIDTH),
-                        op=CompareOp.LTE,
-                        right=LiteralValue(value=float(high_thresh)),
-                    ),
-                ])
+                return AllOfCondition(
+                    conditions=[
+                        CompareCondition(
+                            left=IndicatorPropertyValue(
+                                indicator_id="bb", property=IndicatorProperty.BAND_WIDTH
+                            ),
+                            op=CompareOp.GTE,
+                            right=LiteralValue(value=float(low_thresh)),
+                        ),
+                        CompareCondition(
+                            left=IndicatorPropertyValue(
+                                indicator_id="bb", property=IndicatorProperty.BAND_WIDTH
+                            ),
+                            op=CompareOp.LTE,
+                            right=LiteralValue(value=float(high_thresh)),
+                        ),
+                    ]
+                )
 
         # =================================================================
         # VWAP Metrics
@@ -851,8 +861,8 @@ class IRTranslator:
             # For now, we use a state-based approach with the runtime
             # This metric requires special runtime support
             self.warnings.append(
-                f"gap_pct metric requires runtime state tracking. "
-                f"Ensure StrategyRuntime supports RollingWindow indicator."
+                "gap_pct metric requires runtime state tracking. "
+                "Ensure StrategyRuntime supports RollingWindow indicator."
             )
             return RegimeCondition(
                 metric=metric,
@@ -940,47 +950,55 @@ class IRTranslator:
 
             if phase == "open":
                 # Market open period
-                return AllOfCondition(conditions=[
-                    CompareCondition(
-                        left=TimeValue(component="hour"),
-                        op=CompareOp.GTE,
-                        right=LiteralValue(value=float(hours["open_start"])),
-                    ),
-                    CompareCondition(
-                        left=TimeValue(component="hour"),
-                        op=CompareOp.LT,
-                        right=LiteralValue(value=float(hours["open_end"])),
-                    ),
-                ])
+                return AllOfCondition(
+                    conditions=[
+                        CompareCondition(
+                            left=TimeValue(component="hour"),
+                            op=CompareOp.GTE,
+                            right=LiteralValue(value=float(hours["open_start"])),
+                        ),
+                        CompareCondition(
+                            left=TimeValue(component="hour"),
+                            op=CompareOp.LT,
+                            right=LiteralValue(value=float(hours["open_end"])),
+                        ),
+                    ]
+                )
             elif phase == "close":
                 # Market close period
-                return AllOfCondition(conditions=[
-                    CompareCondition(
-                        left=TimeValue(component="hour"),
-                        op=CompareOp.GTE,
-                        right=LiteralValue(value=float(hours["close_start"])),
-                    ),
-                    CompareCondition(
-                        left=TimeValue(component="hour"),
-                        op=CompareOp.LT,
-                        right=LiteralValue(value=float(hours["close_end"])),
-                    ),
-                ])
+                return AllOfCondition(
+                    conditions=[
+                        CompareCondition(
+                            left=TimeValue(component="hour"),
+                            op=CompareOp.GTE,
+                            right=LiteralValue(value=float(hours["close_start"])),
+                        ),
+                        CompareCondition(
+                            left=TimeValue(component="hour"),
+                            op=CompareOp.LT,
+                            right=LiteralValue(value=float(hours["close_end"])),
+                        ),
+                    ]
+                )
             elif phase == "overnight":
                 # Outside regular session (overnight)
                 # Inverted: NOT (during regular hours)
-                return NotCondition(condition=AllOfCondition(conditions=[
-                    CompareCondition(
-                        left=TimeValue(component="hour"),
-                        op=CompareOp.GTE,
-                        right=LiteralValue(value=float(hours["open_start"])),
-                    ),
-                    CompareCondition(
-                        left=TimeValue(component="hour"),
-                        op=CompareOp.LT,
-                        right=LiteralValue(value=float(hours["close_end"])),
-                    ),
-                ]))
+                return NotCondition(
+                    condition=AllOfCondition(
+                        conditions=[
+                            CompareCondition(
+                                left=TimeValue(component="hour"),
+                                op=CompareOp.GTE,
+                                right=LiteralValue(value=float(hours["open_start"])),
+                            ),
+                            CompareCondition(
+                                left=TimeValue(component="hour"),
+                                op=CompareOp.LT,
+                                right=LiteralValue(value=float(hours["close_end"])),
+                            ),
+                        ]
+                    )
+                )
             else:
                 self.warnings.append(f"Unknown session_phase value: {phase}")
                 return None
@@ -996,18 +1014,20 @@ class IRTranslator:
 
             if level_price is not None:
                 # Fixed price level - check if high >= level >= low
-                return AllOfCondition(conditions=[
-                    CompareCondition(
-                        left=PriceValue(field=PriceField.HIGH),
-                        op=CompareOp.GTE,
-                        right=LiteralValue(value=float(level_price)),
-                    ),
-                    CompareCondition(
-                        left=PriceValue(field=PriceField.LOW),
-                        op=CompareOp.LTE,
-                        right=LiteralValue(value=float(level_price)),
-                    ),
-                ])
+                return AllOfCondition(
+                    conditions=[
+                        CompareCondition(
+                            left=PriceValue(field=PriceField.HIGH),
+                            op=CompareOp.GTE,
+                            right=LiteralValue(value=float(level_price)),
+                        ),
+                        CompareCondition(
+                            left=PriceValue(field=PriceField.LOW),
+                            op=CompareOp.LTE,
+                            right=LiteralValue(value=float(level_price)),
+                        ),
+                    ]
+                )
             elif level_ref:
                 # Dynamic level reference
                 return self._price_level_touch_dynamic(level_ref, lookback)
@@ -1055,9 +1075,15 @@ class IRTranslator:
 
             # Set up required indicators for the runtime
             if level_ref in ("previous_low", "session_low"):
-                self._add_indicator(RollingMinMax(id="level_min", period=lookback, mode="min", field=PriceField.LOW))
+                self._add_indicator(
+                    RollingMinMax(id="level_min", period=lookback, mode="min", field=PriceField.LOW)
+                )
             elif level_ref in ("previous_high", "session_high"):
-                self._add_indicator(RollingMinMax(id="level_max", period=lookback, mode="max", field=PriceField.HIGH))
+                self._add_indicator(
+                    RollingMinMax(
+                        id="level_max", period=lookback, mode="max", field=PriceField.HIGH
+                    )
+                )
 
             # Pass to runtime as RegimeCondition with metadata
             # value is the level_ref for pattern metrics
@@ -1115,52 +1141,56 @@ class IRTranslator:
         elif metric == "risk_event_prob":
             # Risk event probability requires external data feed
             self.warnings.append(
-                f"risk_event_prob metric requires external calendar data. "
-                f"This metric will always pass."
+                "risk_event_prob metric requires external calendar data. "
+                "This metric will always pass."
             )
             return None  # Always pass - no filter
 
         else:
             # Unknown metric - warn and ignore
-            self.warnings.append(
-                f"Unknown metric '{metric}' - condition will always pass."
-            )
+            self.warnings.append(f"Unknown metric '{metric}' - condition will always pass.")
             return None
 
-    def _price_level_touch_dynamic(
-        self, level_ref: str, lookback: int
-    ) -> Condition | None:
+    def _price_level_touch_dynamic(self, level_ref: str, lookback: int) -> Condition | None:
         """Handle dynamic level reference for price_level_touch."""
         if level_ref == "previous_low":
             # Touch the lookback low
-            self._add_indicator(RollingMinMax(id="level_min", period=lookback, mode="min", field=PriceField.LOW))
-            return AllOfCondition(conditions=[
-                CompareCondition(
-                    left=PriceValue(field=PriceField.HIGH),
-                    op=CompareOp.GTE,
-                    right=IndicatorValue(indicator_id="level_min"),
-                ),
-                CompareCondition(
-                    left=PriceValue(field=PriceField.LOW),
-                    op=CompareOp.LTE,
-                    right=IndicatorValue(indicator_id="level_min"),
-                ),
-            ])
+            self._add_indicator(
+                RollingMinMax(id="level_min", period=lookback, mode="min", field=PriceField.LOW)
+            )
+            return AllOfCondition(
+                conditions=[
+                    CompareCondition(
+                        left=PriceValue(field=PriceField.HIGH),
+                        op=CompareOp.GTE,
+                        right=IndicatorValue(indicator_id="level_min"),
+                    ),
+                    CompareCondition(
+                        left=PriceValue(field=PriceField.LOW),
+                        op=CompareOp.LTE,
+                        right=IndicatorValue(indicator_id="level_min"),
+                    ),
+                ]
+            )
         elif level_ref == "previous_high":
             # Touch the lookback high
-            self._add_indicator(RollingMinMax(id="level_max", period=lookback, mode="max", field=PriceField.HIGH))
-            return AllOfCondition(conditions=[
-                CompareCondition(
-                    left=PriceValue(field=PriceField.HIGH),
-                    op=CompareOp.GTE,
-                    right=IndicatorValue(indicator_id="level_max"),
-                ),
-                CompareCondition(
-                    left=PriceValue(field=PriceField.LOW),
-                    op=CompareOp.LTE,
-                    right=IndicatorValue(indicator_id="level_max"),
-                ),
-            ])
+            self._add_indicator(
+                RollingMinMax(id="level_max", period=lookback, mode="max", field=PriceField.HIGH)
+            )
+            return AllOfCondition(
+                conditions=[
+                    CompareCondition(
+                        left=PriceValue(field=PriceField.HIGH),
+                        op=CompareOp.GTE,
+                        right=IndicatorValue(indicator_id="level_max"),
+                    ),
+                    CompareCondition(
+                        left=PriceValue(field=PriceField.LOW),
+                        op=CompareOp.LTE,
+                        right=IndicatorValue(indicator_id="level_max"),
+                    ),
+                ]
+            )
         elif level_ref in ("recent_support", "recent_resistance", "session_low", "session_high"):
             # These require more complex level detection
             self.warnings.append(
@@ -1181,7 +1211,9 @@ class IRTranslator:
     ) -> Condition | None:
         """Handle dynamic level reference for price_level_cross."""
         if level_ref == "previous_low":
-            self._add_indicator(RollingMinMax(id="level_min", period=lookback, mode="min", field=PriceField.LOW))
+            self._add_indicator(
+                RollingMinMax(id="level_min", period=lookback, mode="min", field=PriceField.LOW)
+            )
             if direction == "up":
                 # Cross above the previous low (recovery)
                 return CompareCondition(
@@ -1197,7 +1229,9 @@ class IRTranslator:
                     right=IndicatorValue(indicator_id="level_min"),
                 )
         elif level_ref == "previous_high":
-            self._add_indicator(RollingMinMax(id="level_max", period=lookback, mode="max", field=PriceField.HIGH))
+            self._add_indicator(
+                RollingMinMax(id="level_max", period=lookback, mode="max", field=PriceField.HIGH)
+            )
             if direction == "up":
                 # Cross above the previous high (breakout)
                 return CompareCondition(
@@ -1310,9 +1344,7 @@ class IRTranslator:
             self.warnings.append(f"Unknown edge_event type: {event}")
             return None
 
-    def _band_cross_condition(
-        self, band_id: str, edge: str, direction: str
-    ) -> Condition:
+    def _band_cross_condition(self, band_id: str, edge: str, direction: str) -> Condition:
         """Create condition for band crossing with state tracking.
 
         For cross_in (upper band):
@@ -1448,9 +1480,7 @@ class IRTranslator:
                 right=LiteralValue(value=float(value)),
             )
 
-    def _band_reentry_condition(
-        self, band_event: dict[str, Any], band_id: str
-    ) -> Condition:
+    def _band_reentry_condition(self, band_event: dict[str, Any], band_id: str) -> Condition:
         """Translate reentry condition.
 
         Reentry: price crossed outside band, then came back through middle.
@@ -1559,11 +1589,11 @@ class IRTranslator:
                 trigger_cond = step_conditions[0]
             else:
                 # Step i>0: previous step must be done AND condition true
-                prev_done = f"{seq_id}_step_{i-1}_done"
+                prev_done = f"{seq_id}_step_{i - 1}_done"
                 within_bars = steps[i].get("within_bars")
 
                 if within_bars:
-                    prev_bars_since = f"{seq_id}_bars_since_{i-1}"
+                    prev_bars_since = f"{seq_id}_bars_since_{i - 1}"
                     # Previous step done AND within timeout AND this condition true
                     trigger_cond = AllOfCondition(
                         conditions=[
@@ -1659,8 +1689,8 @@ class IRTranslator:
         buffer_bps = spec.get("buffer_bps", 0)
 
         # Create MAX and MIN indicators for N-bar high/low
-        max_id = f"highest"
-        min_id = f"lowest"
+        max_id = "highest"
+        min_id = "lowest"
 
         self._add_indicator(Maximum(id=max_id, period=lookback_bars))
         self._add_indicator(Minimum(id=min_id, period=lookback_bars))
@@ -1701,13 +1731,20 @@ class IRTranslator:
 
         # Convert day names to integers if needed (0=Monday, 6=Sunday)
         day_name_map = {
-            "monday": 0, "mon": 0,
-            "tuesday": 1, "tue": 1,
-            "wednesday": 2, "wed": 2,
-            "thursday": 3, "thu": 3,
-            "friday": 4, "fri": 4,
-            "saturday": 5, "sat": 5,
-            "sunday": 6, "sun": 6,
+            "monday": 0,
+            "mon": 0,
+            "tuesday": 1,
+            "tue": 1,
+            "wednesday": 2,
+            "wed": 2,
+            "thursday": 3,
+            "thu": 3,
+            "friday": 4,
+            "fri": 4,
+            "saturday": 5,
+            "sat": 5,
+            "sunday": 6,
+            "sun": 6,
         }
         days_of_week = []
         for day in raw_days:

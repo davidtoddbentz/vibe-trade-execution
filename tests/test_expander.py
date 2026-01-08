@@ -1,7 +1,5 @@
 """Tests for archetype expansion system."""
 
-import pytest
-
 from src.translator.archetype_expander import ArchetypeExpander, expand_card
 
 
@@ -249,6 +247,7 @@ class TestArchetypeExpansionIntegration:
         """Expanded range_mean_reversion should translate successfully."""
         from vibe_trade_shared.models import Card, Strategy
         from vibe_trade_shared.models.strategy import Attachment
+
         from src.translator.ir_translator import IRTranslator
 
         # Create strategy with range_mean_reversion card
@@ -256,9 +255,7 @@ class TestArchetypeExpansionIntegration:
             id="test_strategy",
             name="Test Range Mean Reversion",
             universe=["ETH-USD"],
-            attachments=[
-                Attachment(card_id="card1", role="entry", enabled=True, overrides={})
-            ],
+            attachments=[Attachment(card_id="card1", role="entry", enabled=True, overrides={})],
             created_at="2024-01-01T00:00:00Z",
             updated_at="2024-01-01T00:00:00Z",
         )

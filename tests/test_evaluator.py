@@ -2,6 +2,14 @@
 
 import pytest
 
+from src.translator.evaluator import (
+    ActionExecutor,
+    ConditionEvaluator,
+    EvalContext,
+    ExecContext,
+    StateOperator,
+    ValueResolver,
+)
 from src.translator.ir import (
     AllOfCondition,
     AnyOfCondition,
@@ -12,8 +20,8 @@ from src.translator.ir import (
     IncrementStateOp,
     IndicatorBandValue,
     IndicatorValue,
-    LiteralValue,
     LiquidateAction,
+    LiteralValue,
     MaxStateOp,
     NotCondition,
     PriceField,
@@ -22,15 +30,6 @@ from src.translator.ir import (
     SetStateOp,
     StateValue,
 )
-from src.translator.evaluator import (
-    ActionExecutor,
-    ConditionEvaluator,
-    EvalContext,
-    ExecContext,
-    StateOperator,
-    ValueResolver,
-)
-
 
 # =============================================================================
 # Mock Objects for Testing

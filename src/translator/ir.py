@@ -12,12 +12,10 @@ The IR is:
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
-
 
 # =============================================================================
 # Enums
@@ -215,7 +213,20 @@ class RollingMinMax(BaseModel):
 
 # Discriminated union of all indicator types
 Indicator = Annotated[
-    Union[EMA, SMA, BollingerBands, KeltnerChannel, ATR, Maximum, Minimum, RateOfChange, ADX, DonchianChannel, VWAP, RollingWindow, VolumeSMA, RollingMinMax],
+    EMA
+    | SMA
+    | BollingerBands
+    | KeltnerChannel
+    | ATR
+    | Maximum
+    | Minimum
+    | RateOfChange
+    | ADX
+    | DonchianChannel
+    | VWAP
+    | RollingWindow
+    | VolumeSMA
+    | RollingMinMax,
     Field(discriminator="type"),
 ]
 
@@ -293,17 +304,15 @@ class ExpressionValue(BaseModel):
 
 # Discriminated union of all value reference types
 ValueRef = Annotated[
-    Union[
-        IndicatorValue,
-        IndicatorBandValue,
-        IndicatorPropertyValue,
-        PriceValue,
-        VolumeValue,
-        TimeValue,
-        StateValue,
-        LiteralValue,
-        ExpressionValue,
-    ],
+    IndicatorValue
+    | IndicatorBandValue
+    | IndicatorPropertyValue
+    | PriceValue
+    | VolumeValue
+    | TimeValue
+    | StateValue
+    | LiteralValue
+    | ExpressionValue,
     Field(discriminator="type"),
 ]
 
@@ -403,16 +412,14 @@ class TimeFilterCondition(BaseModel):
 
 # Discriminated union of all condition types
 Condition = Annotated[
-    Union[
-        CompareCondition,
-        AllOfCondition,
-        AnyOfCondition,
-        NotCondition,
-        RegimeCondition,
-        BreakoutCondition,
-        SqueezeCondition,
-        TimeFilterCondition,
-    ],
+    CompareCondition
+    | AllOfCondition
+    | AnyOfCondition
+    | NotCondition
+    | RegimeCondition
+    | BreakoutCondition
+    | SqueezeCondition
+    | TimeFilterCondition,
     Field(discriminator="type"),
 ]
 
@@ -449,7 +456,7 @@ class MarketOrderAction(BaseModel):
 
 # Discriminated union of all action types
 Action = Annotated[
-    Union[SetHoldingsAction, LiquidateAction, MarketOrderAction],
+    SetHoldingsAction | LiquidateAction | MarketOrderAction,
     Field(discriminator="type"),
 ]
 
@@ -508,7 +515,7 @@ class SetStateFromConditionOp(BaseModel):
 
 # Discriminated union of state operations
 StateOp = Annotated[
-    Union[SetStateOp, IncrementStateOp, MaxStateOp, SetStateFromConditionOp],
+    SetStateOp | IncrementStateOp | MaxStateOp | SetStateFromConditionOp,
     Field(discriminator="type"),
 ]
 

@@ -1,8 +1,6 @@
 """LEAN execution runner for local development and testing."""
 
-from .engine import LeanEngine
 from .container_manager import ContainerManager
+from .engine import LeanEngine
 
 __all__ = ["LeanEngine", "ContainerManager"]
-
-

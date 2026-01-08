@@ -46,6 +46,9 @@ python_functions = ["test_*"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+exclude = [
+    "lean/",  # LEAN algorithms have special imports that don't work with standard linting
+]
 
 [tool.ruff.lint]
 select = [
@@ -64,4 +67,24 @@ ignore = [
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[tool.coverage.run]
+source = ["src"]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+fail_under = 60
 

@@ -12,28 +12,21 @@ NOTE: We test only the IR path which produces structured data.
 The legacy LEAN code generator (string-to-code) is deprecated.
 """
 
-import pytest
-
 from vibe_trade_shared.models import Card, Strategy
 from vibe_trade_shared.models.strategy import Attachment
 
 from src.translator.ir import (
+    EMA,
     AllOfCondition,
     BandField,
     BollingerBands,
     CompareCondition,
     CompareOp,
-    DonchianChannel,
-    EMA,
     ExpressionValue,
     IndicatorBandValue,
-    IndicatorProperty,
-    IndicatorPropertyValue,
     IndicatorValue,
-    KeltnerChannel,
     LiquidateAction,
     LiteralValue,
-    PriceField,
     PriceValue,
     RateOfChange,
     Resolution,
@@ -43,7 +36,6 @@ from src.translator.ir import (
     StrategyIR,
 )
 from src.translator.ir_translator import IRTranslator
-
 
 # =============================================================================
 # Basic Translator Tests
@@ -94,7 +86,12 @@ class TestIRTranslatorBasic:
                 id="card-001",
                 type="entry.rule_trigger",
                 slots={
-                    "event": {"condition": {"type": "regime", "regime": {"metric": "ret_pct", "op": "<=", "value": 1.0}}},
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {"metric": "ret_pct", "op": "<=", "value": 1.0},
+                        }
+                    },
                     "action": {"direction": "long"},
                 },
                 schema_etag="test",
@@ -346,14 +343,20 @@ class TestIRTranslatorEntryRuleTrigger:
                                 "conditions": [
                                     {
                                         "type": "regime",
-                                        "regime": {"metric": "ret_pct", "op": "<", "value": -2.0}
+                                        "regime": {"metric": "ret_pct", "op": "<", "value": -2.0},
                                     },
                                     {
                                         "type": "regime",
-                                        "regime": {"metric": "trend_ma_relation", "ma_fast": 10, "ma_slow": 30, "op": ">", "value": 0}
-                                    }
-                                ]
-                            }
+                                        "regime": {
+                                            "metric": "trend_ma_relation",
+                                            "ma_fast": 10,
+                                            "ma_slow": 30,
+                                            "op": ">",
+                                            "value": 0,
+                                        },
+                                    },
+                                ],
+                            },
                         }
                     },
                     "action": {"direction": "long"},
@@ -459,7 +462,13 @@ class TestIRTranslatorExits:
                     "event": {
                         "condition": {
                             "type": "regime",
-                            "regime": {"metric": "trend_ma_relation", "op": ">", "value": 0, "ma_fast": 20, "ma_slow": 50},
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
                         }
                     },
                     "action": {"direction": "long"},
@@ -475,7 +484,13 @@ class TestIRTranslatorExits:
                     "event": {
                         "condition": {
                             "type": "regime",
-                            "regime": {"metric": "trend_ma_relation", "op": "<", "value": 0, "ma_fast": 20, "ma_slow": 50},
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": "<",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
                         }
                     },
                     "action": {"mode": "close"},
@@ -571,7 +586,7 @@ class TestIRTranslatorGates:
                     "event": {
                         "condition": {
                             "type": "regime",
-                            "regime": {"metric": "trend_adx", "op": ">", "value": 25}
+                            "regime": {"metric": "trend_adx", "op": ">", "value": 25},
                         }
                     },
                     "action": {"mode": "allow", "target_roles": ["entry"]},
@@ -588,7 +603,7 @@ class TestIRTranslatorGates:
                     "event": {
                         "condition": {
                             "type": "regime",
-                            "regime": {"metric": "ret_pct", "op": "<", "value": -2.0}
+                            "regime": {"metric": "ret_pct", "op": "<", "value": -2.0},
                         }
                     },
                     "action": {"direction": "long"},
@@ -747,7 +762,13 @@ class TestIRTranslatorEMACrossover:
                     "event": {
                         "condition": {
                             "type": "regime",
-                            "regime": {"metric": "trend_ma_relation", "op": ">", "value": 0, "ma_fast": 20, "ma_slow": 50},
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
                         }
                     },
                     "action": {"direction": "long"},
@@ -1226,14 +1247,24 @@ class TestIRTranslatorSequence:
                                 {
                                     "cond": {
                                         "type": "regime",
-                                        "regime": {"metric": "ret_pct", "op": "<", "value": -3.0, "lookback_bars": 5},
+                                        "regime": {
+                                            "metric": "ret_pct",
+                                            "op": "<",
+                                            "value": -3.0,
+                                            "lookback_bars": 5,
+                                        },
                                     }
                                 },
                                 # Step 1: Price bounces back
                                 {
                                     "cond": {
                                         "type": "regime",
-                                        "regime": {"metric": "ret_pct", "op": ">", "value": 1.0, "lookback_bars": 5},
+                                        "regime": {
+                                            "metric": "ret_pct",
+                                            "op": ">",
+                                            "value": 1.0,
+                                            "lookback_bars": 5,
+                                        },
                                     }
                                 },
                             ],
@@ -1293,7 +1324,11 @@ class TestIRTranslatorSequence:
                                     "cond": {
                                         "type": "band_event",
                                         "band_event": {
-                                            "band": {"band": "bollinger", "length": 20, "mult": 2.0},
+                                            "band": {
+                                                "band": "bollinger",
+                                                "length": 20,
+                                                "mult": 2.0,
+                                            },
                                             "kind": "edge_event",
                                             "event": "touch",
                                             "edge": "lower",
@@ -1304,7 +1339,12 @@ class TestIRTranslatorSequence:
                                 {
                                     "cond": {
                                         "type": "regime",
-                                        "regime": {"metric": "ret_pct", "op": ">", "value": 2.0, "lookback_bars": 3},
+                                        "regime": {
+                                            "metric": "ret_pct",
+                                            "op": ">",
+                                            "value": 2.0,
+                                            "lookback_bars": 3,
+                                        },
                                     },
                                     "within_bars": 5,
                                 },
@@ -1358,14 +1398,25 @@ class TestIRTranslatorSequence:
                                 {
                                     "cond": {
                                         "type": "regime",
-                                        "regime": {"metric": "trend_ma_relation", "op": ">", "value": 0, "ma_fast": 20, "ma_slow": 50},
+                                        "regime": {
+                                            "metric": "trend_ma_relation",
+                                            "op": ">",
+                                            "value": 0,
+                                            "ma_fast": 20,
+                                            "ma_slow": 50,
+                                        },
                                     }
                                 },
                                 # Step 1: Dip
                                 {
                                     "cond": {
                                         "type": "regime",
-                                        "regime": {"metric": "ret_pct", "op": "<", "value": -2.0, "lookback_bars": 3},
+                                        "regime": {
+                                            "metric": "ret_pct",
+                                            "op": "<",
+                                            "value": -2.0,
+                                            "lookback_bars": 3,
+                                        },
                                     },
                                     "within_bars": 10,
                                 },
@@ -1373,7 +1424,12 @@ class TestIRTranslatorSequence:
                                 {
                                     "cond": {
                                         "type": "regime",
-                                        "regime": {"metric": "ret_pct", "op": ">", "value": 1.0, "lookback_bars": 3},
+                                        "regime": {
+                                            "metric": "ret_pct",
+                                            "op": ">",
+                                            "value": 1.0,
+                                            "lookback_bars": 3,
+                                        },
                                     },
                                     "within_bars": 5,
                                 },
@@ -1429,7 +1485,12 @@ class TestIRTranslatorSequence:
                                 {
                                     "cond": {
                                         "type": "regime",
-                                        "regime": {"metric": "ret_pct", "op": "<", "value": -3.0, "lookback_bars": 5},
+                                        "regime": {
+                                            "metric": "ret_pct",
+                                            "op": "<",
+                                            "value": -3.0,
+                                            "lookback_bars": 5,
+                                        },
                                     }
                                 },
                             ],
@@ -1987,4 +2048,6 @@ class TestNewMetrics:
         result = translator.translate()
 
         # Should produce warning about external data
-        assert any("calendar" in w.lower() or "risk_event_prob" in w.lower() for w in result.warnings)
+        assert any(
+            "calendar" in w.lower() or "risk_event_prob" in w.lower() for w in result.warnings
+        )

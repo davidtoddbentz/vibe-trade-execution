@@ -7,45 +7,43 @@ It's designed to be used by the LEAN StrategyRuntime algorithm.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import Any, Protocol
 
 from .ir import (
+    # Actions
+    Action,
     # Conditions
     AllOfCondition,
     AnyOfCondition,
+    # Enums
+    BandField,
     CompareCondition,
     Condition,
-    NotCondition,
-    RegimeCondition,
     # Value refs
     ExpressionValue,
+    # State ops
+    IncrementStateOp,
     IndicatorBandValue,
     IndicatorProperty,
     IndicatorPropertyValue,
     IndicatorValue,
+    LiquidateAction,
     LiteralValue,
+    MarketOrderAction,
+    MaxStateOp,
+    NotCondition,
+    PriceField,
     PriceValue,
+    RegimeCondition,
+    SetHoldingsAction,
+    SetStateFromConditionOp,
+    SetStateOp,
+    StateOp,
     StateValue,
     TimeValue,
     ValueRef,
     VolumeValue,
-    # Enums
-    BandField,
-    CompareOp,
-    PriceField,
-    # Actions
-    Action,
-    LiquidateAction,
-    MarketOrderAction,
-    SetHoldingsAction,
-    # State ops
-    IncrementStateOp,
-    MaxStateOp,
-    SetStateFromConditionOp,
-    SetStateOp,
-    StateOp,
 )
-
 
 # =============================================================================
 # Protocols for LEAN integration
@@ -420,13 +418,13 @@ class ActionExecutor:
 class StateOperator:
     """Executes StateOp objects to mutate state."""
 
-    def __init__(self, condition_evaluator: "ConditionEvaluator | None" = None):
+    def __init__(self, condition_evaluator: ConditionEvaluator | None = None):
         self.resolver = ValueResolver()
         # Lazy import to avoid circular dependency
         self._condition_evaluator = condition_evaluator
 
     @property
-    def condition_evaluator(self) -> "ConditionEvaluator":
+    def condition_evaluator(self) -> ConditionEvaluator:
         if self._condition_evaluator is None:
             self._condition_evaluator = ConditionEvaluator()
         return self._condition_evaluator

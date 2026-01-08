@@ -49,7 +49,12 @@ class ArchetypeExpander:
                 data = json.load(f)
                 # Flatten entry/exit/gate/overlay archetypes into single lookup
                 self._templates = {}
-                for category in ["entry_archetypes", "exit_archetypes", "gate_archetypes", "overlay_archetypes"]:
+                for category in [
+                    "entry_archetypes",
+                    "exit_archetypes",
+                    "gate_archetypes",
+                    "overlay_archetypes",
+                ]:
                     if category in data:
                         self._templates.update(data[category])
         else:
@@ -97,7 +102,9 @@ class ArchetypeExpander:
 
         # Build the expanded event structure
         if "event" in expansion:
-            expanded_event = self._substitute_slots(expansion["event"], slots, card, inference_rules)
+            expanded_event = self._substitute_slots(
+                expansion["event"], slots, card, inference_rules
+            )
             expanded["slots"]["event"] = expanded_event
 
         # Build provenance for debugging
@@ -105,7 +112,7 @@ class ArchetypeExpander:
             "source_archetype": archetype,
             "expanded_to": template["expands_to"],
             "expanded_at": datetime.now(timezone.utc).isoformat(),
-            "template_version": "1.0"
+            "template_version": "1.0",
         }
 
         return expanded, provenance
@@ -115,7 +122,7 @@ class ArchetypeExpander:
         template: Any,
         slots: dict[str, Any],
         card: dict[str, Any],
-        inference_rules: dict[str, Any] | None = None
+        inference_rules: dict[str, Any] | None = None,
     ) -> Any:
         """Recursively substitute slot references in a template.
 

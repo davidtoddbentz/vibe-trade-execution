@@ -10,8 +10,8 @@ os.environ["FIRESTORE_DATABASE"] = "strategy"
 # Remove emulator host if set
 os.environ.pop("FIRESTORE_EMULATOR_HOST", None)
 
+from vibe_trade_shared.db import CardRepository, FirestoreClient, StrategyRepository
 from vibe_trade_shared.models import Card, Strategy
-from vibe_trade_shared.db import CardRepository, StrategyRepository, FirestoreClient
 
 from src.translator import IRTranslator
 
@@ -87,14 +87,14 @@ def main():
         success, output, warnings = test_translation(strategy, cards)
 
         if success:
-            print(f"  ✅ Translation successful")
+            print("  ✅ Translation successful")
             if warnings:
                 print(f"  ⚠️  Warnings: {len(warnings)}")
                 for w in warnings:
                     print(f"      - {w}")
             # Show a snippet of the IR
-            lines = output.split('\n')
-            print(f"  IR Preview (first 20 lines):")
+            lines = output.split("\n")
+            print("  IR Preview (first 20 lines):")
             for line in lines[:20]:
                 print(f"    {line}")
             if len(lines) > 20:
@@ -102,13 +102,15 @@ def main():
         else:
             print(f"  ❌ Translation failed: {output}")
 
-        results.append({
-            "name": strategy.name,
-            "id": strategy.id,
-            "success": success,
-            "warnings": warnings,
-            "error": None if success else output
-        })
+        results.append(
+            {
+                "name": strategy.name,
+                "id": strategy.id,
+                "success": success,
+                "warnings": warnings,
+                "error": None if success else output,
+            }
+        )
         print()
 
     # Summary

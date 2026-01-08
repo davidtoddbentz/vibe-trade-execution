@@ -7,13 +7,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
-
 from vibe_trade_shared.models import Card, Strategy
 from vibe_trade_shared.models.strategy import Attachment
 
 from src.translator.evaluator import EvalContext
-from src.translator.ir import PriceField
-
 
 # =============================================================================
 # Mock Classes for Evaluator Tests
@@ -189,9 +186,7 @@ def make_strategy(cards_dict: dict[str, dict]) -> tuple[Strategy, dict[str, Card
 
     for card_id, card_spec in cards_dict.items():
         role = card_spec["type"].split(".")[0]  # entry, exit, gate, overlay
-        attachments.append(
-            Attachment(card_id=card_id, role=role, enabled=True, overrides={})
-        )
+        attachments.append(Attachment(card_id=card_id, role=role, enabled=True, overrides={}))
         cards[card_id] = Card(
             id=card_id,
             type=card_spec["type"],
@@ -233,21 +228,23 @@ def create_entry_strategy(
     Returns:
         Tuple of (Strategy, dict of Cards)
     """
-    return make_strategy({
-        "entry_1": {
-            "type": "entry.rule_trigger",
-            "slots": {
-                "context": {"tf": timeframe, "symbol": symbol},
-                "event": {
-                    "condition": {
-                        "type": condition_type,
-                        condition_type: condition_spec,
-                    }
+    return make_strategy(
+        {
+            "entry_1": {
+                "type": "entry.rule_trigger",
+                "slots": {
+                    "context": {"tf": timeframe, "symbol": symbol},
+                    "event": {
+                        "condition": {
+                            "type": condition_type,
+                            condition_type: condition_spec,
+                        }
+                    },
+                    "action": {"direction": direction},
                 },
-                "action": {"direction": direction},
-            },
+            }
         }
-    })
+    )
 
 
 # =============================================================================
@@ -286,43 +283,45 @@ def band_eval_context() -> EvalContext:
 @pytest.fixture
 def ema_crossover_strategy() -> tuple[Strategy, dict[str, Card]]:
     """Create the standard EMA Crossover Long strategy for testing."""
-    return make_strategy({
-        "entry_1": {
-            "type": "entry.rule_trigger",
-            "slots": {
-                "context": {"tf": "1h", "symbol": "BTC-USD"},
-                "event": {
-                    "condition": {
-                        "type": "regime",
-                        "regime": {
-                            "metric": "trend_ma_relation",
-                            "op": ">",
-                            "value": 0,
-                            "ma_fast": 20,
-                            "ma_slow": 50,
-                        },
-                    }
+    return make_strategy(
+        {
+            "entry_1": {
+                "type": "entry.rule_trigger",
+                "slots": {
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
+                        }
+                    },
+                    "action": {"direction": "long"},
                 },
-                "action": {"direction": "long"},
             },
-        },
-        "exit_1": {
-            "type": "exit.rule_trigger",
-            "slots": {
-                "context": {"tf": "1h", "symbol": "BTC-USD"},
-                "event": {
-                    "condition": {
-                        "type": "regime",
-                        "regime": {
-                            "metric": "trend_ma_relation",
-                            "op": "<",
-                            "value": 0,
-                            "ma_fast": 20,
-                            "ma_slow": 50,
-                        },
-                    }
+            "exit_1": {
+                "type": "exit.rule_trigger",
+                "slots": {
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": "<",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
+                        }
+                    },
+                    "action": {"mode": "close"},
                 },
-                "action": {"mode": "close"},
             },
-        },
-    })
+        }
+    )

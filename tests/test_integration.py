@@ -6,15 +6,14 @@ This module consolidates:
 """
 
 import json
-import pytest
 from pathlib import Path
 
+import pytest
 from vibe_trade_shared.models import Card, Strategy
 from vibe_trade_shared.models.strategy import Attachment
 
-from src.translator import IRTranslator, StrategyIR, ConditionEvaluator, ValueResolver, EvalContext
 from src.lean_runner.engine import LeanEngine
-
+from src.translator import ConditionEvaluator, EvalContext, IRTranslator, StrategyIR
 
 # =============================================================================
 # Mock Classes (for tests that need them inline)
@@ -424,7 +423,13 @@ class TestIRJsonFormat:
                     "event": {
                         "condition": {
                             "type": "regime",
-                            "regime": {"metric": "trend_ma_relation", "op": ">", "value": 0, "ma_fast": 20, "ma_slow": 50},
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
                         }
                     },
                     "action": {"direction": "long"},
@@ -519,7 +524,9 @@ class TestLeanBacktestIntegration:
             cash=100000.0,
         )
 
-        assert result["status"] == "success", f"Backtest failed: {result.get('error', result.get('stderr'))}"
+        assert result["status"] == "success", (
+            f"Backtest failed: {result.get('error', result.get('stderr'))}"
+        )
 
         # Check results file
         results_dir = Path(lean_engine.project_root) / "lean" / "Results"

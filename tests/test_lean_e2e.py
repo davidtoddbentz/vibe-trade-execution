@@ -19,17 +19,15 @@ Run with: pytest tests/test_lean_e2e.py -v
 import csv
 import json
 import subprocess
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
-
-from src.translator.ir_translator import IRTranslator
 from vibe_trade_shared.models import Card, Strategy
 from vibe_trade_shared.models.strategy import Attachment
 
+from src.translator.ir_translator import IRTranslator
 
 # =============================================================================
 # Test Infrastructure
@@ -73,14 +71,16 @@ def generate_deterministic_csv(
 
         current_time = start_date
         for bar in bars:
-            writer.writerow([
-                current_time.strftime("%Y-%m-%d %H:%M:%S"),
-                f"{bar['open']:.2f}",
-                f"{bar['high']:.2f}",
-                f"{bar['low']:.2f}",
-                f"{bar['close']:.2f}",
-                f"{bar['volume']:.2f}",
-            ])
+            writer.writerow(
+                [
+                    current_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    f"{bar['open']:.2f}",
+                    f"{bar['high']:.2f}",
+                    f"{bar['low']:.2f}",
+                    f"{bar['close']:.2f}",
+                    f"{bar['volume']:.2f}",
+                ]
+            )
             current_time += timedelta(hours=1)
 
 
@@ -205,6 +205,7 @@ class TestLeanEndToEnd:
     def run_lean_backtest(self, algorithm_name: str, project_root: Path) -> dict:
         """Run a LEAN backtest and return results."""
         from src.lean_runner.engine import LeanEngine
+
         engine = LeanEngine()
         return engine.run_backtest(
             algorithm_name=algorithm_name,
@@ -252,14 +253,18 @@ class TestLeanEndToEnd:
         # Ramp up
         for i in range(20):
             price = 100 + (i * 2.5)
-            bars.append({"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000})
+            bars.append(
+                {"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000}
+            )
         # Flat high
         for _ in range(20):
             bars.append({"open": 150, "high": 151, "low": 149, "close": 150, "volume": 1000})
         # Ramp down
         for i in range(20):
             price = 150 - (i * 2.5)
-            bars.append({"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000})
+            bars.append(
+                {"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000}
+            )
 
         csv_file = lean_data_dir / "e2e_trend.csv"
         generate_deterministic_csv(csv_file, bars)
@@ -379,15 +384,21 @@ class TestLeanEndToEnd:
         # Oscillation to establish BB
         for i in range(30):
             price = 100 + (5 * (1 if i % 2 == 0 else -1))
-            bars.append({"open": price, "high": price + 2, "low": price - 2, "close": price, "volume": 1000})
+            bars.append(
+                {"open": price, "high": price + 2, "low": price - 2, "close": price, "volume": 1000}
+            )
         # Drop to lower band
         for i in range(10):
             price = 100 - i
-            bars.append({"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000})
+            bars.append(
+                {"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000}
+            )
         # Rise back to middle
-        for i in range(20):
+        for _ in range(20):
             price = 90 + (i * 0.5)
-            bars.append({"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000})
+            bars.append(
+                {"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000}
+            )
 
         csv_file = lean_data_dir / "e2e_reversion.csv"
         generate_deterministic_csv(csv_file, bars)
@@ -418,7 +429,12 @@ class TestLeanEndToEnd:
                                 "type": "compare",
                                 "left": {"type": "price", "field": "close"},
                                 "op": "<",
-                                "right": {"type": "indicator_band", "indicator": "bb", "band": "lower", "period": 20},
+                                "right": {
+                                    "type": "indicator_band",
+                                    "indicator": "bb",
+                                    "band": "lower",
+                                    "period": 20,
+                                },
                             },
                         }
                     },
@@ -440,7 +456,12 @@ class TestLeanEndToEnd:
                                 "type": "compare",
                                 "left": {"type": "price", "field": "close"},
                                 "op": ">",
-                                "right": {"type": "indicator_band", "indicator": "bb", "band": "middle", "period": 20},
+                                "right": {
+                                    "type": "indicator_band",
+                                    "indicator": "bb",
+                                    "band": "middle",
+                                    "period": 20,
+                                },
                             },
                         }
                     },
@@ -462,7 +483,9 @@ class TestLeanEndToEnd:
             f.write(result.ir.to_json())
 
         data_reader = create_lean_data_reader("REVERT", "e2e_reversion.csv")
-        wrapper = create_strategy_wrapper("E2EReversion", "REVERT", data_reader, "e2e_reversion_ir.json")
+        wrapper = create_strategy_wrapper(
+            "E2EReversion", "REVERT", data_reader, "e2e_reversion_ir.json"
+        )
         with open(wrapper_file, "w") as f:
             f.write(wrapper)
 
@@ -498,19 +521,27 @@ class TestLeanEndToEnd:
         # Consolidation
         for i in range(40):
             price = 100 + (i % 5) - 2  # Oscillate 98-103
-            bars.append({"open": price, "high": price + 2, "low": price - 2, "close": price, "volume": 1000})
+            bars.append(
+                {"open": price, "high": price + 2, "low": price - 2, "close": price, "volume": 1000}
+            )
         # Breakout
         for i in range(10):
             price = 105 + (i * 1.5)
-            bars.append({"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 2000})
+            bars.append(
+                {"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 2000}
+            )
         # Continue up
-        for i in range(20):
+        for _ in range(20):
             price = 120
-            bars.append({"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000})
+            bars.append(
+                {"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000}
+            )
         # Drop
-        for i in range(20):
+        for _ in range(20):
             price = 120 - i
-            bars.append({"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000})
+            bars.append(
+                {"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000}
+            )
 
         csv_file = lean_data_dir / "e2e_breakout.csv"
         generate_deterministic_csv(csv_file, bars)
@@ -584,7 +615,9 @@ class TestLeanEndToEnd:
             f.write(result.ir.to_json())
 
         data_reader = create_lean_data_reader("BREAK", "e2e_breakout.csv")
-        wrapper = create_strategy_wrapper("E2EBreakout", "BREAK", data_reader, "e2e_breakout_ir.json")
+        wrapper = create_strategy_wrapper(
+            "E2EBreakout", "BREAK", data_reader, "e2e_breakout_ir.json"
+        )
         with open(wrapper_file, "w") as f:
             f.write(wrapper)
 
@@ -604,9 +637,7 @@ class TestLeanEndToEnd:
     # Tests: ROC indicator, percentage thresholds
     # =========================================================================
 
-    def test_momentum_roc(
-        self, project_root, lean_algorithms_dir, lean_data_dir, lean_results_dir
-    ):
+    def test_momentum_roc(self, project_root, lean_algorithms_dir, lean_data_dir, lean_results_dir):
         """Test ROC momentum: buy on strong momentum, exit on reversal.
 
         Data pattern:
@@ -622,14 +653,18 @@ class TestLeanEndToEnd:
         # Strong up momentum
         for i in range(20):
             price = 100 + i
-            bars.append({"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1500})
+            bars.append(
+                {"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1500}
+            )
         # Flat high
         for _ in range(20):
             bars.append({"open": 120, "high": 121, "low": 119, "close": 120, "volume": 1000})
         # Strong down momentum
         for i in range(20):
             price = 120 - i
-            bars.append({"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1500})
+            bars.append(
+                {"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1500}
+            )
 
         csv_file = lean_data_dir / "e2e_momentum.csv"
         generate_deterministic_csv(csv_file, bars)
@@ -741,14 +776,18 @@ class TestLeanEndToEnd:
         # Ramp up (both conditions true)
         for i in range(20):
             price = 100 + (i * 2.5)
-            bars.append({"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000})
+            bars.append(
+                {"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000}
+            )
         # Flat high
         for _ in range(20):
             bars.append({"open": 150, "high": 151, "low": 149, "close": 150, "volume": 1000})
         # Ramp down
         for i in range(20):
             price = 150 - (i * 2.5)
-            bars.append({"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000})
+            bars.append(
+                {"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000}
+            )
 
         csv_file = lean_data_dir / "e2e_composite.csv"
         generate_deterministic_csv(csv_file, bars)
@@ -842,7 +881,9 @@ class TestLeanEndToEnd:
             f.write(result.ir.to_json())
 
         data_reader = create_lean_data_reader("COMP", "e2e_composite.csv")
-        wrapper = create_strategy_wrapper("E2EComposite", "COMP", data_reader, "e2e_composite_ir.json")
+        wrapper = create_strategy_wrapper(
+            "E2EComposite", "COMP", data_reader, "e2e_composite_ir.json"
+        )
         with open(wrapper_file, "w") as f:
             f.write(wrapper)
 
@@ -857,7 +898,9 @@ class TestLeanEndToEnd:
                 assert orders[0]["direction"] == "buy"
                 buy_price = orders[0]["fillPrice"]
                 sell_price = orders[1]["fillPrice"]
-                assert sell_price > buy_price, f"Expected profit: bought {buy_price}, sold {sell_price}"
+                assert sell_price > buy_price, (
+                    f"Expected profit: bought {buy_price}, sold {sell_price}"
+                )
 
         finally:
             self.cleanup_files(csv_file, ir_file, wrapper_file)
@@ -885,20 +928,30 @@ class TestLeanEndToEnd:
         # Strong uptrend (all conditions met)
         for i in range(30):
             price = 100 + (i * 2)
-            bars.append({
-                "open": price - 1,
-                "high": price + 2,
-                "low": price - 2,
-                "close": price,
-                "volume": 1500
-            })
+            bars.append(
+                {
+                    "open": price - 1,
+                    "high": price + 2,
+                    "low": price - 2,
+                    "close": price,
+                    "volume": 1500,
+                }
+            )
         # Plateau
         for _ in range(20):
             bars.append({"open": 160, "high": 161, "low": 159, "close": 160, "volume": 1000})
         # Reversal
-        for i in range(20):
+        for _ in range(20):
             price = 160 - (i * 2)
-            bars.append({"open": price + 1, "high": price + 2, "low": price - 2, "close": price, "volume": 1000})
+            bars.append(
+                {
+                    "open": price + 1,
+                    "high": price + 2,
+                    "low": price - 2,
+                    "close": price,
+                    "volume": 1000,
+                }
+            )
 
         csv_file = lean_data_dir / "e2e_allof.csv"
         generate_deterministic_csv(csv_file, bars)
@@ -1027,11 +1080,15 @@ class TestLeanEndToEnd:
         # Entry trigger
         for i in range(10):
             price = 100 + i
-            bars.append({"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000})
+            bars.append(
+                {"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000}
+            )
         # Quick profit spike (triggers profit target exit)
         for i in range(15):
             price = 110 + (i * 2)
-            bars.append({"open": price, "high": price + 2, "low": price - 1, "close": price, "volume": 2000})
+            bars.append(
+                {"open": price, "high": price + 2, "low": price - 1, "close": price, "volume": 2000}
+            )
         # Continuation
         for _ in range(20):
             bars.append({"open": 140, "high": 142, "low": 138, "close": 140, "volume": 1000})
@@ -1159,14 +1216,18 @@ class TestLeanEndToEnd:
         # Uptrend with strong momentum
         for i in range(25):
             price = 100 + (i * 2)
-            bars.append({"open": price, "high": price + 2, "low": price - 1, "close": price, "volume": 1500})
+            bars.append(
+                {"open": price, "high": price + 2, "low": price - 1, "close": price, "volume": 1500}
+            )
         # Hold
         for _ in range(15):
             bars.append({"open": 150, "high": 152, "low": 148, "close": 150, "volume": 1000})
         # Reversal
-        for i in range(20):
+        for _ in range(20):
             price = 150 - (i * 2)
-            bars.append({"open": price, "high": price + 1, "low": price - 2, "close": price, "volume": 1000})
+            bars.append(
+                {"open": price, "high": price + 1, "low": price - 2, "close": price, "volume": 1000}
+            )
 
         csv_file = lean_data_dir / "e2e_nested.csv"
         generate_deterministic_csv(csv_file, bars)
@@ -1310,11 +1371,15 @@ class TestLeanEndToEnd:
         # Entry
         for i in range(15):
             price = 100 + i
-            bars.append({"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000})
+            bars.append(
+                {"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000}
+            )
         # Quick profit (triggers profit exit)
         for i in range(10):
             price = 115 + (i * 2)
-            bars.append({"open": price, "high": price + 2, "low": price - 1, "close": price, "volume": 1500})
+            bars.append(
+                {"open": price, "high": price + 2, "low": price - 1, "close": price, "volume": 1500}
+            )
         # Continue
         for _ in range(20):
             bars.append({"open": 135, "high": 137, "low": 133, "close": 135, "volume": 1000})
@@ -1417,7 +1482,9 @@ class TestLeanEndToEnd:
             f.write(result.ir.to_json())
 
         data_reader = create_lean_data_reader("MEXIT", "e2e_multi_exit.csv")
-        wrapper = create_strategy_wrapper("E2EMultiExit", "MEXIT", data_reader, "e2e_multi_exit_ir.json")
+        wrapper = create_strategy_wrapper(
+            "E2EMultiExit", "MEXIT", data_reader, "e2e_multi_exit_ir.json"
+        )
         with open(wrapper_file, "w") as f:
             f.write(wrapper)
 
@@ -1451,14 +1518,18 @@ class TestLeanEndToEnd:
         # Uptrend
         for i in range(25):
             price = 100 + (i * 2)
-            bars.append({"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000})
+            bars.append(
+                {"open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1000}
+            )
         # Flat
         for _ in range(15):
             bars.append({"open": 150, "high": 151, "low": 149, "close": 150, "volume": 1000})
         # Downtrend
-        for i in range(20):
+        for _ in range(20):
             price = 150 - (i * 2)
-            bars.append({"open": price, "high": price + 1, "low": price - 2, "close": price, "volume": 1000})
+            bars.append(
+                {"open": price, "high": price + 1, "low": price - 2, "close": price, "volume": 1000}
+            )
 
         csv_file = lean_data_dir / "e2e_not.csv"
         generate_deterministic_csv(csv_file, bars)
