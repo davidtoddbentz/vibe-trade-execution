@@ -1,0 +1,2 @@
+market,symbol-type,description,quote-currency,contract-multiplier,pip-size,lot-size
+gdax,crypto,BTCUSD,BTC,1,0.01,1

@@ -1,0 +1,1249 @@
+"""Tests for the IR translator."""
+
+import pytest
+
+from vibe_trade_shared.models import Card, Strategy
+from vibe_trade_shared.models.strategy import Attachment
+
+from src.translator.ir import (
+    AllOfCondition,
+    BandField,
+    BollingerBands,
+    CompareCondition,
+    CompareOp,
+    DonchianChannel,
+    EMA,
+    ExpressionValue,
+    IndicatorBandValue,
+    IndicatorProperty,
+    IndicatorPropertyValue,
+    IndicatorValue,
+    KeltnerChannel,
+    LiquidateAction,
+    LiteralValue,
+    PriceField,
+    PriceValue,
+    RateOfChange,
+    Resolution,
+    SetHoldingsAction,
+    SetStateFromConditionOp,
+    StateValue,
+)
+from src.translator.ir_translator import IRTranslator
+
+
+class TestIRTranslatorBasic:
+    """Basic tests for IR translator."""
+
+    def test_empty_strategy(self):
+        """Test translating a strategy with no attachments."""
+        strategy = Strategy(
+            id="test-001",
+            name="Empty Test",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[],
+        )
+
+        translator = IRTranslator(strategy, {})
+        result = translator.translate()
+
+        assert result.ir.strategy_id == "test-001"
+        assert result.ir.strategy_name == "Empty Test"
+        assert result.ir.symbol == "BTC-USD"
+        assert result.ir.entry is None
+        assert len(result.ir.exits) == 0
+        assert len(result.warnings) == 0
+
+    def test_disabled_attachment_ignored(self):
+        """Test that disabled attachments are not translated."""
+        strategy = Strategy(
+            id="test-002",
+            name="Disabled Test",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="card-001", role="entry", enabled=False),
+            ],
+        )
+
+        cards = {
+            "card-001": Card(
+                id="card-001",
+                type="entry.rule_trigger",
+                slots={
+                    "event": {"condition": {"type": "regime", "regime": {"metric": "ret_pct", "op": "<=", "value": 1.0}}},
+                    "action": {"direction": "long"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        result = translator.translate()
+
+        assert result.ir.entry is None
+
+    def test_missing_card_warning(self):
+        """Test that missing cards produce warnings."""
+        strategy = Strategy(
+            id="test-003",
+            name="Missing Card Test",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="nonexistent", role="entry", enabled=True),
+            ],
+        )
+
+        translator = IRTranslator(strategy, {})
+        result = translator.translate()
+
+        assert any("not found" in w for w in result.warnings)
+
+
+class TestIRTranslatorEntryRuleTrigger:
+    """Tests for entry.rule_trigger archetype."""
+
+    def test_ret_pct_entry(self):
+        """Test translating ret_pct condition."""
+        strategy = Strategy(
+            id="test-ret",
+            name="Ret Pct Entry",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="entry-001", role="entry", enabled=True),
+            ],
+        )
+
+        cards = {
+            "entry-001": Card(
+                id="entry-001",
+                type="entry.rule_trigger",
+                slots={
+                    "context": {"tf": "1d", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {
+                                "metric": "ret_pct",
+                                "op": "<=",
+                                "value": 1.0,
+                                "lookback_bars": 1,
+                            },
+                        }
+                    },
+                    "action": {"direction": "long"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        result = translator.translate()
+
+        # Should have ROC indicator
+        assert any(isinstance(ind, RateOfChange) for ind in result.ir.indicators)
+
+        # Should have entry
+        assert result.ir.entry is not None
+        assert isinstance(result.ir.entry.action, SetHoldingsAction)
+        assert result.ir.entry.action.allocation == 0.95
+
+        # Entry condition should be CompareCondition
+        assert isinstance(result.ir.entry.condition, CompareCondition)
+        assert result.ir.entry.condition.op == CompareOp.LTE
+
+    def test_trend_ma_relation_entry(self):
+        """Test translating trend_ma_relation condition."""
+        strategy = Strategy(
+            id="test-ma",
+            name="MA Crossover",
+            universe=["ETH-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="entry-001", role="entry", enabled=True),
+            ],
+        )
+
+        cards = {
+            "entry-001": Card(
+                id="entry-001",
+                type="entry.rule_trigger",
+                slots={
+                    "context": {"tf": "1h", "symbol": "ETH-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
+                        }
+                    },
+                    "action": {"direction": "long"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        result = translator.translate()
+
+        # Should have two EMA indicators
+        emas = [ind for ind in result.ir.indicators if isinstance(ind, EMA)]
+        assert len(emas) == 2
+
+        # Check periods
+        periods = {ema.period for ema in emas}
+        assert periods == {20, 50}
+
+        # Should have entry with CompareCondition
+        assert result.ir.entry is not None
+        assert isinstance(result.ir.entry.condition, CompareCondition)
+        assert result.ir.entry.condition.op == CompareOp.GT
+
+    def test_short_direction(self):
+        """Test short direction produces negative allocation."""
+        strategy = Strategy(
+            id="test-short",
+            name="Short Entry",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="entry-001", role="entry", enabled=True),
+            ],
+        )
+
+        cards = {
+            "entry-001": Card(
+                id="entry-001",
+                type="entry.rule_trigger",
+                slots={
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {"metric": "ret_pct", "op": ">=", "value": 5.0},
+                        }
+                    },
+                    "action": {"direction": "short"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        result = translator.translate()
+
+        assert result.ir.entry is not None
+        assert isinstance(result.ir.entry.action, SetHoldingsAction)
+        assert result.ir.entry.action.allocation == -0.95
+
+
+class TestIRTranslatorTrendPullback:
+    """Tests for entry.trend_pullback archetype."""
+
+    def test_trend_pullback_long(self):
+        """Test trend pullback long entry."""
+        strategy = Strategy(
+            id="test-pullback",
+            name="Pullback Entry",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="entry-001", role="entry", enabled=True),
+            ],
+        )
+
+        cards = {
+            "entry-001": Card(
+                id="entry-001",
+                type="entry.trend_pullback",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "dip_band": {"band": "bollinger", "length": 20, "mult": 2.0},
+                        "trend_gate": {"fast": 20, "slow": 50, "op": ">"},
+                    },
+                    "action": {"direction": "long"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        result = translator.translate()
+
+        # Should have EMA and BB indicators
+        assert any(isinstance(ind, EMA) for ind in result.ir.indicators)
+        assert any(isinstance(ind, BollingerBands) for ind in result.ir.indicators)
+
+        # Should have AllOfCondition (trend AND dip)
+        assert result.ir.entry is not None
+        assert isinstance(result.ir.entry.condition, AllOfCondition)
+        assert len(result.ir.entry.condition.conditions) == 2
+
+
+class TestIRTranslatorExits:
+    """Tests for exit archetypes."""
+
+    def test_exit_rule_trigger(self):
+        """Test exit.rule_trigger archetype."""
+        strategy = Strategy(
+            id="test-exit",
+            name="Exit Test",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="entry-001", role="entry", enabled=True),
+                Attachment(card_id="exit-001", role="exit", enabled=True),
+            ],
+        )
+
+        cards = {
+            "entry-001": Card(
+                id="entry-001",
+                type="entry.rule_trigger",
+                slots={
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {"metric": "trend_ma_relation", "op": ">", "value": 0, "ma_fast": 20, "ma_slow": 50},
+                        }
+                    },
+                    "action": {"direction": "long"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            ),
+            "exit-001": Card(
+                id="exit-001",
+                type="exit.rule_trigger",
+                slots={
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {"metric": "trend_ma_relation", "op": "<", "value": 0, "ma_fast": 20, "ma_slow": 50},
+                        }
+                    },
+                    "action": {"mode": "close"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            ),
+        }
+
+        translator = IRTranslator(strategy, cards)
+        result = translator.translate()
+
+        # Should have one exit
+        assert len(result.ir.exits) == 1
+        assert isinstance(result.ir.exits[0].action, LiquidateAction)
+        assert result.ir.exits[0].condition.op == CompareOp.LT
+
+    def test_exit_band(self):
+        """Test exit.band_exit archetype."""
+        strategy = Strategy(
+            id="test-band-exit",
+            name="Band Exit Test",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="exit-001", role="exit", enabled=True),
+            ],
+        )
+
+        cards = {
+            "exit-001": Card(
+                id="exit-001",
+                type="exit.band_exit",
+                slots={
+                    "event": {
+                        "exit_band": {"band": "bollinger", "length": 20, "mult": 2.0},
+                        "exit_trigger": {"edge": "upper"},
+                    },
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            ),
+        }
+
+        translator = IRTranslator(strategy, cards)
+        result = translator.translate()
+
+        # Should have BB indicator
+        assert any(isinstance(ind, BollingerBands) for ind in result.ir.indicators)
+
+        # Should have exit with upper band comparison
+        assert len(result.ir.exits) == 1
+        exit_cond = result.ir.exits[0].condition
+        assert isinstance(exit_cond, CompareCondition)
+        assert exit_cond.op == CompareOp.GTE
+        assert isinstance(exit_cond.right, IndicatorBandValue)
+        assert exit_cond.right.band == BandField.UPPER
+
+
+class TestIRTranslatorEMACrossover:
+    """End-to-end test for EMA Crossover strategy."""
+
+    def test_ema_crossover_long_complete(self):
+        """Test complete EMA Crossover Long strategy translation."""
+        strategy = Strategy(
+            id="strat-ema-crossover",
+            name="EMA Crossover Long",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="entry-card", role="entry", enabled=True),
+                Attachment(card_id="exit-card", role="exit", enabled=True),
+            ],
+        )
+
+        cards = {
+            "entry-card": Card(
+                id="entry-card",
+                type="entry.rule_trigger",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
+                        }
+                    },
+                    "action": {"direction": "long"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            ),
+            "exit-card": Card(
+                id="exit-card",
+                type="exit.rule_trigger",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": "<",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
+                        }
+                    },
+                    "action": {"mode": "close"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            ),
+        }
+
+        translator = IRTranslator(strategy, cards)
+        result = translator.translate()
+
+        # Verify no warnings
+        assert len(result.warnings) == 0, f"Unexpected warnings: {result.warnings}"
+
+        # Verify metadata
+        assert result.ir.strategy_id == "strat-ema-crossover"
+        assert result.ir.strategy_name == "EMA Crossover Long"
+        assert result.ir.symbol == "BTC-USD"
+        assert result.ir.resolution == Resolution.HOUR
+
+        # Verify indicators - should be deduplicated
+        emas = [ind for ind in result.ir.indicators if isinstance(ind, EMA)]
+        assert len(emas) == 2
+        assert {ema.id for ema in emas} == {"ema_fast", "ema_slow"}
+        assert {ema.period for ema in emas} == {20, 50}
+
+        # Verify entry
+        assert result.ir.entry is not None
+        entry_cond = result.ir.entry.condition
+        assert isinstance(entry_cond, CompareCondition)
+        assert isinstance(entry_cond.left, IndicatorValue)
+        assert entry_cond.left.indicator_id == "ema_fast"
+        assert entry_cond.op == CompareOp.GT
+        assert isinstance(entry_cond.right, IndicatorValue)
+        assert entry_cond.right.indicator_id == "ema_slow"
+
+        # Verify entry action
+        assert isinstance(result.ir.entry.action, SetHoldingsAction)
+        assert result.ir.entry.action.allocation == 0.95
+
+        # Verify exit
+        assert len(result.ir.exits) == 1
+        exit_cond = result.ir.exits[0].condition
+        assert isinstance(exit_cond, CompareCondition)
+        assert exit_cond.op == CompareOp.LT
+        assert isinstance(result.ir.exits[0].action, LiquidateAction)
+
+        # Verify on_fill hooks
+        assert len(result.ir.entry.on_fill) == 2  # entry_price and bars_since_entry
+
+        # Verify state vars
+        state_ids = {sv.id for sv in result.ir.state}
+        assert "entry_price" in state_ids
+        assert "bars_since_entry" in state_ids
+
+    def test_ir_serialization_roundtrip(self):
+        """Test that IR can be serialized and deserialized correctly."""
+        strategy = Strategy(
+            id="test-serial",
+            name="Serialization Test",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="entry-card", role="entry", enabled=True),
+            ],
+        )
+
+        cards = {
+            "entry-card": Card(
+                id="entry-card",
+                type="entry.rule_trigger",
+                slots={
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {"metric": "trend_ma_relation", "op": ">", "value": 0, "ma_fast": 20, "ma_slow": 50},
+                        }
+                    },
+                    "action": {"direction": "long"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            ),
+        }
+
+        translator = IRTranslator(strategy, cards)
+        result = translator.translate()
+
+        # Serialize to JSON
+        json_str = result.ir.to_json()
+
+        # Deserialize back
+        from src.translator.ir import StrategyIR
+        restored = StrategyIR.from_json(json_str)
+
+        # Verify roundtrip
+        assert restored.strategy_id == result.ir.strategy_id
+        assert restored.strategy_name == result.ir.strategy_name
+        assert len(restored.indicators) == len(result.ir.indicators)
+        assert restored.entry is not None
+        assert restored.entry.condition.op == result.ir.entry.condition.op
+
+
+class TestIRTranslatorBandEvent:
+    """Tests for band_event condition translation."""
+
+    def test_band_event_touch_lower(self):
+        """Test band_event touch lower band condition."""
+        strategy = Strategy(
+            id="test-band-touch",
+            name="Band Touch Entry",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="entry-card", role="entry", enabled=True),
+            ],
+        )
+
+        cards = {
+            "entry-card": Card(
+                id="entry-card",
+                type="entry.rule_trigger",
+                slots={
+                    "event": {
+                        "condition": {
+                            "type": "band_event",
+                            "band_event": {
+                                "band": {"band": "bollinger", "length": 20, "mult": 2.0},
+                                "kind": "edge_event",
+                                "event": "touch",
+                                "edge": "lower",
+                            },
+                        }
+                    },
+                    "action": {"direction": "long"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            ),
+        }
+
+        translator = IRTranslator(strategy, cards)
+        result = translator.translate()
+
+        # Should have no warnings
+        assert len(result.warnings) == 0, f"Unexpected warnings: {result.warnings}"
+
+        # Should have BB indicator
+        indicator_types = {ind.type for ind in result.ir.indicators}
+        assert "BB" in indicator_types
+
+        # Entry condition should be price <= lower_band
+        assert result.ir.entry is not None
+        cond = result.ir.entry.condition
+        assert isinstance(cond, CompareCondition)
+        assert cond.op == CompareOp.LTE
+        assert isinstance(cond.left, PriceValue)
+        assert isinstance(cond.right, IndicatorBandValue)
+        assert cond.right.band == BandField.LOWER
+
+    def test_band_event_touch_upper(self):
+        """Test band_event touch upper band condition."""
+        strategy = Strategy(
+            id="test-band-upper",
+            name="Band Touch Upper",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="entry-card", role="entry", enabled=True),
+            ],
+        )
+
+        cards = {
+            "entry-card": Card(
+                id="entry-card",
+                type="entry.rule_trigger",
+                slots={
+                    "event": {
+                        "condition": {
+                            "type": "band_event",
+                            "band_event": {
+                                "band": {"band": "keltner", "length": 20, "mult": 2.0},
+                                "kind": "edge_event",
+                                "event": "touch",
+                                "edge": "upper",
+                            },
+                        }
+                    },
+                    "action": {"direction": "short"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            ),
+        }
+
+        translator = IRTranslator(strategy, cards)
+        result = translator.translate()
+
+        assert len(result.warnings) == 0
+
+        # Should have KC indicator
+        indicator_types = {ind.type for ind in result.ir.indicators}
+        assert "KC" in indicator_types
+
+        # Condition should be price >= upper_band
+        cond = result.ir.entry.condition
+        assert isinstance(cond, CompareCondition)
+        assert cond.op == CompareOp.GTE
+        assert cond.right.band == BandField.UPPER
+
+    def test_band_event_distance_zscore(self):
+        """Test band_event distance (z-score) condition."""
+        strategy = Strategy(
+            id="test-band-zscore",
+            name="Z-Score Entry",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="entry-card", role="entry", enabled=True),
+            ],
+        )
+
+        cards = {
+            "entry-card": Card(
+                id="entry-card",
+                type="entry.rule_trigger",
+                slots={
+                    "event": {
+                        "condition": {
+                            "type": "band_event",
+                            "band_event": {
+                                "band": {"band": "bollinger", "length": 20, "mult": 2.0},
+                                "kind": "distance",
+                                "op": "<",
+                                "value": -2.0,
+                            },
+                        }
+                    },
+                    "action": {"direction": "long"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            ),
+        }
+
+        translator = IRTranslator(strategy, cards)
+        result = translator.translate()
+
+        assert len(result.warnings) == 0
+
+        # Entry condition should be a comparison
+        cond = result.ir.entry.condition
+        assert isinstance(cond, CompareCondition)
+        assert cond.op == CompareOp.LT
+
+        # Left side should be an expression (z-score calculation)
+        assert isinstance(cond.left, ExpressionValue)
+        assert cond.left.op == "/"
+
+        # Right side should be literal -2.0
+        assert isinstance(cond.right, LiteralValue)
+        assert cond.right.value == -2.0
+
+    def test_band_event_cross_in_creates_state(self):
+        """Test band_event cross_in creates state tracking."""
+        strategy = Strategy(
+            id="test-band-cross",
+            name="Cross Entry",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="entry-card", role="entry", enabled=True),
+            ],
+        )
+
+        cards = {
+            "entry-card": Card(
+                id="entry-card",
+                type="entry.rule_trigger",
+                slots={
+                    "event": {
+                        "condition": {
+                            "type": "band_event",
+                            "band_event": {
+                                "band": {"band": "bollinger", "length": 20, "mult": 2.0},
+                                "kind": "edge_event",
+                                "event": "cross_in",
+                                "edge": "lower",
+                            },
+                        }
+                    },
+                    "action": {"direction": "long"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            ),
+        }
+
+        translator = IRTranslator(strategy, cards)
+        result = translator.translate()
+
+        assert len(result.warnings) == 0
+
+        # Should have state variables for tracking
+        state_ids = {s.id for s in result.ir.state}
+        assert any("was_" in sid for sid in state_ids), f"Expected state var, got: {state_ids}"
+
+        # Should have on_bar hooks for state tracking
+        assert len(result.ir.on_bar) > 0, "Expected on_bar hooks for cross detection"
+
+        # on_bar should have SetStateFromConditionOp
+        op = result.ir.on_bar[0]
+        assert isinstance(op, SetStateFromConditionOp)
+
+        # Entry condition should be AllOf (state AND price condition)
+        cond = result.ir.entry.condition
+        assert isinstance(cond, AllOfCondition)
+        assert len(cond.conditions) == 2
+
+    def test_band_event_reentry_creates_state(self):
+        """Test band_event reentry creates state tracking."""
+        strategy = Strategy(
+            id="test-band-reentry",
+            name="Reentry Entry",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="entry-card", role="entry", enabled=True),
+            ],
+        )
+
+        cards = {
+            "entry-card": Card(
+                id="entry-card",
+                type="entry.rule_trigger",
+                slots={
+                    "event": {
+                        "condition": {
+                            "type": "band_event",
+                            "band_event": {
+                                "band": {"band": "bollinger", "length": 20, "mult": 2.0},
+                                "kind": "reentry",
+                                "edge": "lower",
+                            },
+                        }
+                    },
+                    "action": {"direction": "long"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            ),
+        }
+
+        translator = IRTranslator(strategy, cards)
+        result = translator.translate()
+
+        assert len(result.warnings) == 0
+
+        # Should have state variables for tracking
+        state_ids = {s.id for s in result.ir.state}
+        assert any("was_outside" in sid for sid in state_ids)
+
+        # Should have on_bar hooks
+        assert len(result.ir.on_bar) > 0
+
+        # Entry condition should be AllOf (was_outside AND crosses_middle)
+        cond = result.ir.entry.condition
+        assert isinstance(cond, AllOfCondition)
+        # One condition checks state, other checks price vs middle band
+        has_state_check = any(
+            isinstance(c, CompareCondition) and isinstance(c.left, StateValue)
+            for c in cond.conditions
+        )
+        has_price_check = any(
+            isinstance(c, CompareCondition)
+            and isinstance(c.left, PriceValue)
+            and isinstance(c.right, IndicatorBandValue)
+            and c.right.band == BandField.MIDDLE
+            for c in cond.conditions
+        )
+        assert has_state_check, "Expected state check in condition"
+        assert has_price_check, "Expected price vs middle band check"
+
+    def test_band_event_donchian_channel(self):
+        """Test band_event with Donchian channel."""
+        strategy = Strategy(
+            id="test-donchian",
+            name="Donchian Entry",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="entry-card", role="entry", enabled=True),
+            ],
+        )
+
+        cards = {
+            "entry-card": Card(
+                id="entry-card",
+                type="entry.rule_trigger",
+                slots={
+                    "event": {
+                        "condition": {
+                            "type": "band_event",
+                            "band_event": {
+                                "band": {"band": "donchian", "length": 20},
+                                "kind": "edge_event",
+                                "event": "touch",
+                                "edge": "upper",
+                            },
+                        }
+                    },
+                    "action": {"direction": "long"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            ),
+        }
+
+        translator = IRTranslator(strategy, cards)
+        result = translator.translate()
+
+        assert len(result.warnings) == 0
+
+        # Should have DC indicator
+        indicator_types = {ind.type for ind in result.ir.indicators}
+        assert "DC" in indicator_types
+
+    def test_band_event_combined_with_regime(self):
+        """Test band_event combined with regime condition via allOf."""
+        strategy = Strategy(
+            id="test-combined",
+            name="Combined Entry",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="entry-card", role="entry", enabled=True),
+            ],
+        )
+
+        cards = {
+            "entry-card": Card(
+                id="entry-card",
+                type="entry.rule_trigger",
+                slots={
+                    "event": {
+                        "condition": {
+                            "type": "allOf",
+                            "allOf": [
+                                {
+                                    "type": "regime",
+                                    "regime": {
+                                        "metric": "trend_ma_relation",
+                                        "op": ">",
+                                        "value": 0,
+                                        "ma_fast": 20,
+                                        "ma_slow": 50,
+                                    },
+                                },
+                                {
+                                    "type": "band_event",
+                                    "band_event": {
+                                        "band": {"band": "bollinger", "length": 20, "mult": 2.0},
+                                        "kind": "edge_event",
+                                        "event": "touch",
+                                        "edge": "lower",
+                                    },
+                                },
+                            ],
+                        }
+                    },
+                    "action": {"direction": "long"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            ),
+        }
+
+        translator = IRTranslator(strategy, cards)
+        result = translator.translate()
+
+        assert len(result.warnings) == 0
+
+        # Should have EMA and BB indicators
+        indicator_types = {ind.type for ind in result.ir.indicators}
+        assert "EMA" in indicator_types
+        assert "BB" in indicator_types
+
+        # Entry should be AllOf with two conditions
+        cond = result.ir.entry.condition
+        assert isinstance(cond, AllOfCondition)
+        assert len(cond.conditions) == 2
+
+
+class TestIRTranslatorSequence:
+    """Tests for sequence ConditionSpec translation."""
+
+    def test_sequence_two_steps_basic(self):
+        """Test basic 2-step sequence without timeout."""
+        strategy = Strategy(
+            id="test-sequence",
+            name="Sequence Entry",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="entry-card", role="entry", enabled=True),
+            ],
+        )
+
+        cards = {
+            "entry-card": Card(
+                id="entry-card",
+                type="entry.rule_trigger",
+                slots={
+                    "event": {
+                        "condition": {
+                            "type": "sequence",
+                            "sequence": [
+                                # Step 0: Price dips (oversold)
+                                {
+                                    "cond": {
+                                        "type": "regime",
+                                        "regime": {"metric": "ret_pct", "op": "<", "value": -3.0, "lookback_bars": 5},
+                                    }
+                                },
+                                # Step 1: Price bounces back
+                                {
+                                    "cond": {
+                                        "type": "regime",
+                                        "regime": {"metric": "ret_pct", "op": ">", "value": 1.0, "lookback_bars": 5},
+                                    }
+                                },
+                            ],
+                        }
+                    },
+                    "action": {"direction": "long"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            ),
+        }
+
+        translator = IRTranslator(strategy, cards)
+        result = translator.translate()
+
+        assert len(result.warnings) == 0
+
+        # Should have state variables for sequence tracking
+        state_ids = {sv.id for sv in result.ir.state}
+        assert "seq_0_step_0_trigger" in state_ids
+        assert "seq_0_step_0_done" in state_ids
+        assert "seq_0_bars_since_0" in state_ids
+
+        # Should have on_bar hooks for state tracking
+        assert len(result.ir.on_bar) >= 3  # trigger, done, bars_since
+
+        # Entry condition should be AllOf
+        cond = result.ir.entry.condition
+        assert isinstance(cond, AllOfCondition)
+
+    def test_sequence_with_timeout(self):
+        """Test sequence with within_bars timeout."""
+        strategy = Strategy(
+            id="test-sequence-timeout",
+            name="Sequence with Timeout",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="entry-card", role="entry", enabled=True),
+            ],
+        )
+
+        cards = {
+            "entry-card": Card(
+                id="entry-card",
+                type="entry.rule_trigger",
+                slots={
+                    "event": {
+                        "condition": {
+                            "type": "sequence",
+                            "sequence": [
+                                # Step 0: Touch lower band
+                                {
+                                    "cond": {
+                                        "type": "band_event",
+                                        "band_event": {
+                                            "band": {"band": "bollinger", "length": 20, "mult": 2.0},
+                                            "kind": "edge_event",
+                                            "event": "touch",
+                                            "edge": "lower",
+                                        },
+                                    }
+                                },
+                                # Step 1: Bounce back within 5 bars
+                                {
+                                    "cond": {
+                                        "type": "regime",
+                                        "regime": {"metric": "ret_pct", "op": ">", "value": 2.0, "lookback_bars": 3},
+                                    },
+                                    "within_bars": 5,
+                                },
+                            ],
+                        }
+                    },
+                    "action": {"direction": "long"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            ),
+        }
+
+        translator = IRTranslator(strategy, cards)
+        result = translator.translate()
+
+        assert len(result.warnings) == 0
+
+        # Entry condition should include timeout check
+        # The condition checks: step_0_done AND bars_since_0 <= 5 AND step_1_condition
+        cond = result.ir.entry.condition
+        assert isinstance(cond, AllOfCondition)
+        # Should have at least 3 conditions: step_0_done, timeout check, step_1 condition
+        assert len(cond.conditions) >= 3
+
+    def test_sequence_three_steps(self):
+        """Test 3-step sequence."""
+        strategy = Strategy(
+            id="test-sequence-3",
+            name="Three Step Sequence",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="entry-card", role="entry", enabled=True),
+            ],
+        )
+
+        cards = {
+            "entry-card": Card(
+                id="entry-card",
+                type="entry.rule_trigger",
+                slots={
+                    "event": {
+                        "condition": {
+                            "type": "sequence",
+                            "sequence": [
+                                # Step 0: Uptrend
+                                {
+                                    "cond": {
+                                        "type": "regime",
+                                        "regime": {"metric": "trend_ma_relation", "op": ">", "value": 0, "ma_fast": 20, "ma_slow": 50},
+                                    }
+                                },
+                                # Step 1: Dip
+                                {
+                                    "cond": {
+                                        "type": "regime",
+                                        "regime": {"metric": "ret_pct", "op": "<", "value": -2.0, "lookback_bars": 3},
+                                    },
+                                    "within_bars": 10,
+                                },
+                                # Step 2: Recovery
+                                {
+                                    "cond": {
+                                        "type": "regime",
+                                        "regime": {"metric": "ret_pct", "op": ">", "value": 1.0, "lookback_bars": 3},
+                                    },
+                                    "within_bars": 5,
+                                },
+                            ],
+                        }
+                    },
+                    "action": {"direction": "long"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            ),
+        }
+
+        translator = IRTranslator(strategy, cards)
+        result = translator.translate()
+
+        assert len(result.warnings) == 0
+
+        # Should have state for steps 0 and 1 (step 2 is the final condition)
+        state_ids = {sv.id for sv in result.ir.state}
+        assert "seq_0_step_0_done" in state_ids
+        assert "seq_0_step_1_done" in state_ids
+
+        # Entry condition should check both previous steps done
+        cond = result.ir.entry.condition
+        assert isinstance(cond, AllOfCondition)
+
+    def test_sequence_single_step_warning(self):
+        """Test that single-step sequence produces warning."""
+        strategy = Strategy(
+            id="test-sequence-invalid",
+            name="Invalid Sequence",
+            universe=["BTC-USD"],
+            status="ready",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            attachments=[
+                Attachment(card_id="entry-card", role="entry", enabled=True),
+            ],
+        )
+
+        cards = {
+            "entry-card": Card(
+                id="entry-card",
+                type="entry.rule_trigger",
+                slots={
+                    "event": {
+                        "condition": {
+                            "type": "sequence",
+                            "sequence": [
+                                # Only one step - invalid
+                                {
+                                    "cond": {
+                                        "type": "regime",
+                                        "regime": {"metric": "ret_pct", "op": "<", "value": -3.0, "lookback_bars": 5},
+                                    }
+                                },
+                            ],
+                        }
+                    },
+                    "action": {"direction": "long"},
+                },
+                schema_etag="test",
+                created_at="2024-01-01T00:00:00Z",
+                updated_at="2024-01-01T00:00:00Z",
+            ),
+        }
+
+        translator = IRTranslator(strategy, cards)
+        result = translator.translate()
+
+        # Should have warning about single-step sequence
+        assert len(result.warnings) > 0
+        assert any("at least 2" in w for w in result.warnings)

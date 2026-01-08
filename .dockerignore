@@ -1,0 +1,25 @@
+# Ignore unnecessary files when building Docker image
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.env
+.idea/
+.vscode/
+*.log
+*.md
+tests/
+lean/Results/
+lean/Data/
+schema_bt/
+src/
+*.lock
+
