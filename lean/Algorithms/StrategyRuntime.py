@@ -46,6 +46,50 @@ class CompareOp(str, Enum):
 
 
 # =============================================================================
+# Custom Data Reader for CSV files
+# =============================================================================
+
+
+class CustomCryptoData(PythonData):
+    """Custom data reader for cryptocurrency CSV files."""
+
+    def GetSource(self, config, date, isLiveMode):
+        """Return the data source - CSV file in /Data directory."""
+        # Convert symbol to filename (e.g., BTCUSD -> btc_usd_data.csv)
+        symbol = str(config.Symbol.Value).lower()
+        if symbol.endswith("usd"):
+            base = symbol[:-3]
+            filename = f"{base}_usd_data.csv"
+        else:
+            filename = f"{symbol}_data.csv"
+        return SubscriptionDataSource(
+            f"/Data/{filename}",
+            SubscriptionTransportMedium.LocalFile,
+            FileFormat.Csv
+        )
+
+    def Reader(self, config, line, date, isLiveMode):
+        """Parse a line from the CSV file."""
+        if not line or line.startswith("datetime"):
+            return None
+
+        data = CustomCryptoData()
+        try:
+            parts = line.split(",")
+            data.Time = datetime.strptime(parts[0], "%Y-%m-%d %H:%M:%S")
+            data.Symbol = config.Symbol
+            data.Value = float(parts[4])  # close price
+            data["Open"] = float(parts[1])
+            data["High"] = float(parts[2])
+            data["Low"] = float(parts[3])
+            data["Close"] = float(parts[4])
+            data["Volume"] = float(parts[5])
+        except Exception:
+            return None
+        return data
+
+
+# =============================================================================
 # Runtime Algorithm
 # =============================================================================
 
@@ -65,20 +109,20 @@ class StrategyRuntime(QCAlgorithm):
         if ir_json:
             self.ir = json.loads(ir_json)
         else:
-            # Try loading from file
+            # Try loading from file (parameter or default path)
             ir_path = self.GetParameter("strategy_ir_path")
-            if ir_path:
-                self.ir = self._load_ir_from_file(ir_path)
-            else:
-                raise ValueError("No strategy_ir or strategy_ir_path parameter provided")
+            if not ir_path:
+                # Default path for backtest service
+                ir_path = "/Data/strategy_ir.json"
+            self.ir = self._load_ir_from_file(ir_path)
+
+        # Set resolution (must be before _add_symbol which uses it)
+        resolution_str = self.ir.get("resolution", "Hour")
+        self.resolution = getattr(Resolution, resolution_str.capitalize(), Resolution.Hour)
 
         # Set up symbol
         symbol_str = self.ir.get("symbol", "BTC-USD")
         self.symbol = self._add_symbol(symbol_str)
-
-        # Set resolution
-        resolution_str = self.ir.get("resolution", "Hour")
-        self.resolution = getattr(Resolution, resolution_str.capitalize(), Resolution.Hour)
 
         # Initialize indicators
         self.indicators = {}
@@ -104,19 +148,19 @@ class StrategyRuntime(QCAlgorithm):
         self.Log(f"   Indicators: {len(self.indicators)}")
 
     def _add_symbol(self, symbol_str: str) -> Symbol:
-        """Add symbol based on string (e.g., BTC-USD)."""
-        # Convert vibe-trade symbol format to LEAN format
-        if "-USD" in symbol_str:
-            base = symbol_str.replace("-USD", "")
-            lean_symbol = f"{base}USD"
-            return self.AddCrypto(lean_symbol, self.resolution, Market.GDAX).Symbol
-        else:
-            return self.AddCrypto(symbol_str, self.resolution, Market.GDAX).Symbol
+        """Add symbol using custom data reader for CSV files."""
+        # Use AddData with CustomCryptoData for CSV files
+        return self.AddData(CustomCryptoData, symbol_str, self.resolution).Symbol
 
     def _load_ir_from_file(self, path: str) -> dict:
         """Load IR JSON from a file path."""
-        # In LEAN, you'd typically use ObjectStore or include in algorithm data
-        raise NotImplementedError("File loading not yet implemented")
+        try:
+            with open(path, 'r') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            raise ValueError(f"Strategy IR file not found: {path}")
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in strategy IR file: {e}")
 
     def _create_indicators(self):
         """Create all indicators defined in the IR."""

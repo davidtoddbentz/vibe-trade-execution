@@ -103,15 +103,9 @@ class BacktestService:
                     error="Failed to translate strategy to IR",
                 )
 
-            # Step 2: Generate LEAN algorithm code
-            logger.info("Generating LEAN algorithm code...")
-            algorithm_code = self._generate_lean_algorithm(
-                ir_result.ir,
-                request.symbol,
-                request.start_date,
-                request.end_date,
-                request.initial_cash,
-            )
+            # Step 2: Serialize IR to JSON
+            logger.info("Serializing strategy IR...")
+            ir_json = ir_result.ir.model_dump_json(indent=2)
 
             # Step 3: Fetch market data from GCS
             logger.info(f"Fetching market data for {request.symbol}...")
@@ -129,7 +123,7 @@ class BacktestService:
                     start_date=request.start_date,
                     end_date=request.end_date,
                     error=f"No market data found for {request.symbol} in date range",
-                    algorithm_code=algorithm_code,
+                    algorithm_code=ir_json,
                 )
 
             logger.info(f"Fetched {len(candles)} candles")
@@ -146,23 +140,34 @@ class BacktestService:
                 # Copy required LEAN data files (symbol-properties, market-hours)
                 self._copy_lean_data_files(data_dir)
 
-                # Write algorithm
+                # Copy StrategyRuntime.py and write IR JSON
                 algo_dir = temp_path / "Algorithms"
                 algo_dir.mkdir(parents=True, exist_ok=True)
-                algo_file = algo_dir / "BacktestAlgorithm.py"
-                algo_file.write_text(algorithm_code)
+
+                # Copy the StrategyRuntime from lean/Algorithms
+                runtime_src = Path(__file__).parent.parent.parent / "lean" / "Algorithms" / "StrategyRuntime.py"
+                runtime_dst = algo_dir / "StrategyRuntime.py"
+                shutil.copy(runtime_src, runtime_dst)
+
+                # Write IR JSON to data directory
+                ir_file = data_dir / "strategy_ir.json"
+                ir_file.write_text(ir_json)
 
                 # Results directory
                 results_dir = temp_path / "Results"
                 results_dir.mkdir(parents=True, exist_ok=True)
 
-                # Step 5: Run LEAN
-                logger.info("Running LEAN backtest...")
+                # Step 5: Run LEAN with StrategyRuntime
+                logger.info("Running LEAN backtest with StrategyRuntime...")
                 result = self._run_lean(
                     algo_dir,
                     data_dir,
                     results_dir,
-                    "BacktestAlgorithm",
+                    "StrategyRuntime",
+                    ir_path="/Data/strategy_ir.json",
+                    start_date=request.start_date,
+                    end_date=request.end_date,
+                    initial_cash=request.initial_cash,
                 )
 
                 if result.get("status") == "error":
@@ -172,7 +177,7 @@ class BacktestService:
                         start_date=request.start_date,
                         end_date=request.end_date,
                         error=result.get("error") or result.get("stderr"),
-                        algorithm_code=algorithm_code,
+                        algorithm_code=ir_json,
                     )
 
                 return BacktestResult(
@@ -181,7 +186,7 @@ class BacktestService:
                     start_date=request.start_date,
                     end_date=request.end_date,
                     results=result.get("results"),
-                    algorithm_code=algorithm_code,
+                    algorithm_code=ir_json,
                     message=f"Backtest completed with {len(candles)} candles",
                 )
 
@@ -285,6 +290,10 @@ class BacktestAlgorithm(QCAlgorithm):
         data_dir: Path,
         results_dir: Path,
         algorithm_name: str,
+        ir_path: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        initial_cash: float | None = None,
     ) -> dict[str, Any]:
         """Run LEAN Docker container."""
         cmd = [
@@ -309,6 +318,20 @@ class BacktestAlgorithm(QCAlgorithm):
             "--results-destination-folder",
             "/Results",
         ]
+
+        # Add parameters for StrategyRuntime (LEAN expects comma-separated key=value pairs)
+        params = []
+        if ir_path:
+            params.append(f"strategy_ir_path={ir_path}")
+        if start_date:
+            params.append(f"start_date={start_date.strftime('%Y%m%d')}")
+        if end_date:
+            params.append(f"end_date={end_date.strftime('%Y%m%d')}")
+        if initial_cash:
+            params.append(f"initial_cash={initial_cash}")
+
+        if params:
+            cmd.extend(["--parameters", ",".join(params)])
 
         logger.debug(f"Running: {' '.join(cmd)}")
 
