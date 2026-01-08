@@ -1,20 +1,66 @@
-"""End-to-end tests for the IR-based translation pipeline.
+"""Integration tests for the strategy translation and LEAN execution pipeline.
 
-These tests verify the complete flow from Strategy/Cards to IR JSON
-that can be consumed by the LEAN StrategyRuntime algorithm.
+This module consolidates:
+- Translation pipeline tests (Strategy/Cards → IR JSON)
+- LEAN backtest execution tests with deterministic data
 """
 
 import json
 import pytest
+from pathlib import Path
 
 from vibe_trade_shared.models import Card, Strategy
 from vibe_trade_shared.models.strategy import Attachment
 
 from src.translator import IRTranslator, StrategyIR, ConditionEvaluator, ValueResolver, EvalContext
+from src.lean_runner.engine import LeanEngine
 
 
-class TestEndToEndEmaCrossover:
-    """End-to-end tests for EMA Crossover strategy."""
+# =============================================================================
+# Mock Classes (for tests that need them inline)
+# =============================================================================
+
+
+class MockIndicatorCurrent:
+    """Mock for indicator.Current property."""
+
+    def __init__(self, value: float):
+        self.Value = value
+
+
+class MockIndicator:
+    """Mock for a simple indicator (EMA, SMA, ROC, etc.)."""
+
+    def __init__(self, value: float, is_ready: bool = True):
+        self.Current = MockIndicatorCurrent(value)
+        self.IsReady = is_ready
+
+
+class MockPriceBar:
+    """Mock for LEAN price bar."""
+
+    def __init__(
+        self,
+        open_: float = 100.0,
+        high: float = 105.0,
+        low: float = 95.0,
+        close: float = 102.0,
+        volume: float = 1000.0,
+    ):
+        self.Open = open_
+        self.High = high
+        self.Low = low
+        self.Close = close
+        self.Volume = volume
+
+
+# =============================================================================
+# Translation Pipeline Tests
+# =============================================================================
+
+
+class TestTranslationPipeline:
+    """Tests for the full IR-based translation pipeline."""
 
     @pytest.fixture
     def ema_crossover_strategy(self) -> tuple[Strategy, dict[str, Card]]:
@@ -27,14 +73,14 @@ class TestEndToEndEmaCrossover:
             created_at="2024-01-01T00:00:00Z",
             updated_at="2024-01-01T00:00:00Z",
             attachments=[
-                Attachment(card_id="entry-card", role="entry", enabled=True),
-                Attachment(card_id="exit-card", role="exit", enabled=True),
+                Attachment(card_id="entry_1", role="entry", enabled=True),
+                Attachment(card_id="exit_1", role="exit", enabled=True),
             ],
         )
 
         cards = {
-            "entry-card": Card(
-                id="entry-card",
+            "entry_1": Card(
+                id="entry_1",
                 type="entry.rule_trigger",
                 slots={
                     "context": {"tf": "1h", "symbol": "BTC-USD"},
@@ -56,8 +102,8 @@ class TestEndToEndEmaCrossover:
                 created_at="2024-01-01T00:00:00Z",
                 updated_at="2024-01-01T00:00:00Z",
             ),
-            "exit-card": Card(
-                id="exit-card",
+            "exit_1": Card(
+                id="exit_1",
                 type="exit.rule_trigger",
                 slots={
                     "context": {"tf": "1h", "symbol": "BTC-USD"},
@@ -146,23 +192,6 @@ class TestEndToEndEmaCrossover:
         translator = IRTranslator(strategy, cards)
         result = translator.translate()
 
-        # Create mock context
-        class MockIndicatorCurrent:
-            def __init__(self, value):
-                self.Value = value
-
-        class MockIndicator:
-            def __init__(self, value):
-                self.Current = MockIndicatorCurrent(value)
-                self.IsReady = True
-
-        class MockPriceBar:
-            def __init__(self):
-                self.Open = 100.0
-                self.High = 105.0
-                self.Low = 98.0
-                self.Close = 103.0
-
         # Scenario 1: EMA fast > EMA slow (should trigger entry)
         ctx_bullish = EvalContext(
             indicators={
@@ -234,8 +263,13 @@ class TestEndToEndEmaCrossover:
         assert entry_cond["right"]["indicator_id"] == "ema_slow"
 
 
-class TestEndToEndComplexStrategy:
-    """End-to-end tests for more complex strategies."""
+# =============================================================================
+# Complex Strategy Translation Tests
+# =============================================================================
+
+
+class TestComplexStrategyTranslation:
+    """Translation tests for complex strategies."""
 
     def test_trend_pullback_with_bollinger(self):
         """Test trend pullback strategy with Bollinger bands."""
@@ -247,14 +281,14 @@ class TestEndToEndComplexStrategy:
             created_at="2024-01-01T00:00:00Z",
             updated_at="2024-01-01T00:00:00Z",
             attachments=[
-                Attachment(card_id="entry", role="entry", enabled=True),
-                Attachment(card_id="exit", role="exit", enabled=True),
+                Attachment(card_id="entry_1", role="entry", enabled=True),
+                Attachment(card_id="exit_1", role="exit", enabled=True),
             ],
         )
 
         cards = {
-            "entry": Card(
-                id="entry",
+            "entry_1": Card(
+                id="entry_1",
                 type="entry.trend_pullback",
                 slots={
                     "context": {"tf": "1h", "symbol": "ETH-USD"},
@@ -268,8 +302,8 @@ class TestEndToEndComplexStrategy:
                 created_at="2024-01-01T00:00:00Z",
                 updated_at="2024-01-01T00:00:00Z",
             ),
-            "exit": Card(
-                id="exit",
+            "exit_1": Card(
+                id="exit_1",
                 type="exit.band_exit",
                 slots={
                     "event": {
@@ -311,14 +345,14 @@ class TestEndToEndComplexStrategy:
             created_at="2024-01-01T00:00:00Z",
             updated_at="2024-01-01T00:00:00Z",
             attachments=[
-                Attachment(card_id="entry", role="entry", enabled=True),
-                Attachment(card_id="exit", role="exit", enabled=True),
+                Attachment(card_id="entry_1", role="entry", enabled=True),
+                Attachment(card_id="exit_1", role="exit", enabled=True),
             ],
         )
 
         cards = {
-            "entry": Card(
-                id="entry",
+            "entry_1": Card(
+                id="entry_1",
                 type="entry.breakout_trendfollow",
                 slots={
                     "event": {"breakout": {"lookback_bars": 50}},
@@ -328,8 +362,8 @@ class TestEndToEndComplexStrategy:
                 created_at="2024-01-01T00:00:00Z",
                 updated_at="2024-01-01T00:00:00Z",
             ),
-            "exit": Card(
-                id="exit",
+            "exit_1": Card(
+                id="exit_1",
                 type="exit.trailing_stop",
                 slots={
                     "event": {
@@ -360,6 +394,11 @@ class TestEndToEndComplexStrategy:
         assert "atr" in ir_json
 
 
+# =============================================================================
+# IR JSON Format Tests
+# =============================================================================
+
+
 class TestIRJsonFormat:
     """Tests for IR JSON format details."""
 
@@ -373,13 +412,13 @@ class TestIRJsonFormat:
             created_at="2024-01-01T00:00:00Z",
             updated_at="2024-01-01T00:00:00Z",
             attachments=[
-                Attachment(card_id="entry", role="entry", enabled=True),
+                Attachment(card_id="entry_1", role="entry", enabled=True),
             ],
         )
 
         cards = {
-            "entry": Card(
-                id="entry",
+            "entry_1": Card(
+                id="entry_1",
                 type="entry.rule_trigger",
                 slots={
                     "event": {
@@ -431,4 +470,86 @@ class TestIRJsonFormat:
         # Compact should be shorter (no whitespace)
         assert len(ir_json_compact) < len(ir_json_pretty)
         assert "\n" in ir_json_pretty
-        # Compact JSON may still have newlines depending on Pydantic version
+
+
+# =============================================================================
+# LEAN Backtest Integration Tests
+# =============================================================================
+
+
+@pytest.fixture
+def lean_engine():
+    """Create LEAN engine for testing."""
+    engine = LeanEngine()
+    if not engine.check_docker_available():
+        pytest.skip("Docker/LEAN not available")
+    return engine
+
+
+class TestLeanBacktestIntegration:
+    """Test backtests with deterministic data where we know expected outcomes."""
+
+    def test_ema_crossover_deterministic(self, lean_engine):
+        """Verify EMA crossover trades correctly on deterministic data.
+
+        Data pattern:
+        - Hours 0-49: flat at $100
+        - Hours 50-59: ramp up $100→$200 (+$10/hour)
+        - Hours 60-97: flat at $200
+        - Hours 98-107: ramp down $200→$100 (-$10/hour)
+        - Hours 108-120: flat at $100
+
+        Expected trades with EMA(5)/EMA(10):
+        - BUY at Jan 3 02:00 when price jumps to $110 (fast EMA crosses above slow)
+        - SELL at Jan 5 02:00 when price drops to $190 (fast EMA crosses below slow)
+
+        Exact calculation:
+        - Starting cash: $100,000
+        - SetHoldings(0.95) → $95,000 to invest
+        - Buy @ $110 → 861 shares (LEAN rounds down)
+        - Cost: 861 × $110 = $94,710, remaining cash: $5,290
+        - Sell @ $190 → 861 × $190 = $163,590
+        - Final: $163,590 + $5,290 = $168,880
+        - Return: 68.88%
+        """
+        result = lean_engine.run_backtest(
+            algorithm_name="EmaDeterministicTest",
+            start_date="20240101",
+            end_date="20240106",
+            cash=100000.0,
+        )
+
+        assert result["status"] == "success", f"Backtest failed: {result.get('error', result.get('stderr'))}"
+
+        # Check results file
+        results_dir = Path(lean_engine.project_root) / "lean" / "Results"
+        summary_file = results_dir / "EmaDeterministicTest-summary.json"
+
+        assert summary_file.exists(), "Summary file not found"
+
+        with open(summary_file) as f:
+            summary = json.load(f)
+
+        stats = summary["statistics"]
+
+        # Exact expected values
+        end_equity = float(summary["runtimeStatistics"]["Equity"].replace("$", "").replace(",", ""))
+        assert end_equity == 168880.0, f"Expected $168,880, got ${end_equity:,.2f}"
+
+        net_profit_str = stats["Net Profit"]  # "68.880%"
+        net_profit = float(net_profit_str.replace("%", ""))
+        assert net_profit == 68.88, f"Expected 68.88% profit, got {net_profit}%"
+
+        # Exactly 2 orders (1 buy, 1 sell)
+        total_orders = int(stats["Total Orders"])
+        assert total_orders == 2, f"Expected 2 orders, got {total_orders}"
+
+        # 100% win rate (single winning trade)
+        win_rate_str = stats["Win Rate"]
+        win_rate = int(win_rate_str.replace("%", ""))
+        assert win_rate == 100, f"Expected 100% win rate, got {win_rate}%"
+
+    def test_ema_crossover_flat_market_no_trades(self, lean_engine):
+        """Verify no trades when EMAs never cross (flat market)."""
+        # This would require a separate flat-only CSV file
+        pytest.skip("Requires flat market test data")
