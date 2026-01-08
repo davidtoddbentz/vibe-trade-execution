@@ -8,6 +8,7 @@ dependencies = [
     "jsonschema>=4.20.0",
     "google-cloud-pubsub>=2.18.0",
     "vibe-trade-shared @ git+https://github.com/davidtoddbentz/vibe-trade-shared.git@main",
+    "vibe-trade-data @ git+https://github.com/davidtoddbentz/vibe-trade-data.git@main",
 ]
 authors = [
     {name = "Vibe Trade", email = "dev@vibe-trade.com"},
