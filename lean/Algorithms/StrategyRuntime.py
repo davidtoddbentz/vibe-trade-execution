@@ -231,6 +231,13 @@ class StrategyRuntime(QCAlgorithm):
         self.on_bar_invested_ops = self.ir.get("on_bar_invested", [])
         self.on_bar_ops = self.ir.get("on_bar", [])
 
+        # Trade tracking for output
+        self.trades = []  # List of completed trades
+        self.current_trade = None  # Active trade
+        self.equity_curve = []  # Portfolio value over time
+        self.peak_equity = float(initial_cash_str) if initial_cash_str else 100000
+        self.max_drawdown = 0.0
+
         self.Log(f"✅ StrategyRuntime initialized")
         self.Log(f"   Strategy: {self.ir.get('strategy_name', 'Unknown')}")
         self.Log(f"   Symbol: {self.symbol}")
@@ -382,6 +389,9 @@ class StrategyRuntime(QCAlgorithm):
         if not self._evaluate_gates(bar):
             return
 
+        # Track equity curve (every bar)
+        self._track_equity(bar)
+
         # Check position state
         is_invested = self.Portfolio[self.symbol].Invested
 
@@ -392,6 +402,29 @@ class StrategyRuntime(QCAlgorithm):
         else:
             # Check entry
             self._evaluate_entry(bar)
+
+    def _track_equity(self, bar):
+        """Track portfolio equity for equity curve."""
+        equity = self.Portfolio.TotalPortfolioValue
+        cash = self.Portfolio.Cash
+        holdings = equity - cash
+
+        # Update peak and drawdown
+        if equity > self.peak_equity:
+            self.peak_equity = equity
+        drawdown = (self.peak_equity - equity) / self.peak_equity * 100 if self.peak_equity > 0 else 0
+        if drawdown > self.max_drawdown:
+            self.max_drawdown = drawdown
+
+        # Sample equity curve (every 10 bars to keep size manageable)
+        if len(self.equity_curve) == 0 or len(self.equity_curve) % 10 == 0:
+            self.equity_curve.append({
+                "time": str(self.Time),
+                "equity": float(equity),
+                "cash": float(cash),
+                "holdings": float(holdings),
+                "drawdown": float(drawdown),
+            })
 
     def _indicators_ready(self) -> bool:
         """Check if all indicators are ready."""
@@ -437,6 +470,15 @@ class StrategyRuntime(QCAlgorithm):
             action = self.entry_rule.get("action", {})
             self._execute_action(action)
 
+            # Track trade
+            self.current_trade = {
+                "symbol": str(self.symbol),
+                "direction": "long",  # TODO: detect short
+                "entry_time": str(self.Time),
+                "entry_price": float(bar.Close),
+                "quantity": float(self.Portfolio[self.symbol].Quantity),
+            }
+
             # Run on_fill hooks
             for op in self.entry_rule.get("on_fill", []):
                 self._execute_state_op(op, bar)
@@ -451,6 +493,22 @@ class StrategyRuntime(QCAlgorithm):
         for exit_rule in sorted_exits:
             condition = exit_rule.get("condition")
             if self._evaluate_condition(condition, bar):
+                # Complete trade tracking before executing action
+                if self.current_trade:
+                    entry_price = self.current_trade["entry_price"]
+                    exit_price = float(bar.Close)
+                    pnl = (exit_price - entry_price) * self.current_trade.get("quantity", 0)
+                    pnl_pct = ((exit_price / entry_price) - 1) * 100 if entry_price > 0 else 0
+
+                    self.current_trade["exit_time"] = str(self.Time)
+                    self.current_trade["exit_price"] = exit_price
+                    self.current_trade["pnl"] = pnl
+                    self.current_trade["pnl_percent"] = pnl_pct
+                    self.current_trade["exit_reason"] = exit_rule.get("id", "unknown")
+
+                    self.trades.append(self.current_trade)
+                    self.current_trade = None
+
                 action = exit_rule.get("action", {})
                 self._execute_action(action)
                 self.Log(f"🔴 EXIT ({exit_rule.get('id', 'unknown')}) @ ${bar.Close:.2f}")
@@ -877,5 +935,77 @@ class StrategyRuntime(QCAlgorithm):
     def OnEndOfAlgorithm(self):
         """Called when algorithm ends."""
         portfolio_value = self.Portfolio.TotalPortfolioValue
-        self.Log(f"📊 Final Portfolio Value: ${portfolio_value:,.2f}")
-        self.Log(f"   Strategy: {self.ir.get('strategy_name', 'Unknown')}")
+        initial_cash = float(self.GetParameter("initial_cash") or 100000)
+
+        # Calculate statistics
+        total_return = ((portfolio_value / initial_cash) - 1) * 100
+        winning_trades = [t for t in self.trades if t.get("pnl", 0) > 0]
+        losing_trades = [t for t in self.trades if t.get("pnl", 0) <= 0]
+        win_rate = len(winning_trades) / len(self.trades) * 100 if self.trades else 0
+
+        avg_win = sum(t.get("pnl_percent", 0) for t in winning_trades) / len(winning_trades) if winning_trades else 0
+        avg_loss = sum(t.get("pnl_percent", 0) for t in losing_trades) / len(losing_trades) if losing_trades else 0
+        profit_factor = abs(avg_win / avg_loss) if avg_loss != 0 else 0
+
+        # Log summary
+        self.Log(f"")
+        self.Log(f"{'='*60}")
+        self.Log(f"📊 BACKTEST RESULTS: {self.ir.get('strategy_name', 'Unknown')}")
+        self.Log(f"{'='*60}")
+        self.Log(f"")
+        self.Log(f"PERFORMANCE")
+        self.Log(f"  Initial Capital:    ${initial_cash:,.2f}")
+        self.Log(f"  Final Equity:       ${portfolio_value:,.2f}")
+        self.Log(f"  Total Return:       {total_return:+.2f}%")
+        self.Log(f"  Max Drawdown:       {self.max_drawdown:.2f}%")
+        self.Log(f"")
+        self.Log(f"TRADES")
+        self.Log(f"  Total Trades:       {len(self.trades)}")
+        self.Log(f"  Winning Trades:     {len(winning_trades)}")
+        self.Log(f"  Losing Trades:      {len(losing_trades)}")
+        self.Log(f"  Win Rate:           {win_rate:.1f}%")
+        self.Log(f"  Avg Win:            {avg_win:+.2f}%")
+        self.Log(f"  Avg Loss:           {avg_loss:+.2f}%")
+        self.Log(f"  Profit Factor:      {profit_factor:.2f}")
+        self.Log(f"")
+
+        # Log individual trades
+        if self.trades:
+            self.Log(f"TRADE LOG")
+            for i, t in enumerate(self.trades):
+                self.Log(f"  #{i+1}: {t['direction'].upper()} @ ${t['entry_price']:.2f} -> ${t.get('exit_price', 0):.2f} | P&L: {t.get('pnl_percent', 0):+.2f}% | Exit: {t.get('exit_reason', 'N/A')}")
+            self.Log(f"")
+
+        self.Log(f"{'='*60}")
+
+        # Write structured output to JSON file
+        import os
+        output = {
+            "strategy_id": self.ir.get("strategy_id", "unknown"),
+            "strategy_name": self.ir.get("strategy_name", "Unknown"),
+            "symbol": str(self.symbol),
+            "initial_cash": initial_cash,
+            "final_equity": float(portfolio_value),
+            "total_return_pct": total_return,
+            "max_drawdown_pct": self.max_drawdown,
+            "statistics": {
+                "total_trades": len(self.trades),
+                "winning_trades": len(winning_trades),
+                "losing_trades": len(losing_trades),
+                "win_rate": win_rate,
+                "avg_win_pct": avg_win,
+                "avg_loss_pct": avg_loss,
+                "profit_factor": profit_factor,
+            },
+            "trades": self.trades,
+            "equity_curve": self.equity_curve,
+        }
+
+        # Write to results directory
+        output_path = "/workspace/Results/strategy_output.json"
+        try:
+            with open(output_path, "w") as f:
+                json.dump(output, f, indent=2)
+            self.Log(f"📁 Results written to: {output_path}")
+        except Exception as e:
+            self.Log(f"⚠️ Failed to write output: {e}")
