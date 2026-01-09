@@ -71,21 +71,20 @@ class BacktestService:
         self,
         request: BacktestRequest,
         strategy: Any,  # Strategy from vibe-trade-shared
-        cards: list[Any],  # Cards from vibe-trade-shared
+        cards: dict[str, Any],  # Cards from vibe-trade-shared (card_id -> Card)
     ) -> BacktestResult:
         """Run a backtest for a strategy.
 
         Args:
             request: Backtest request parameters
             strategy: Strategy model
-            cards: List of cards associated with the strategy
+            cards: Dict mapping card_id to Card objects
 
         Returns:
             BacktestResult with status and results
         """
         try:
-            # Import here to avoid circular imports and allow graceful degradation
-            from vibe_trade_data import DataFetcher, LeanDataExporter
+            from src.data import DataFetcher, LeanDataExporter
 
             logger.info(f"Starting backtest for strategy {request.strategy_id}")
 
@@ -145,7 +144,12 @@ class BacktestService:
                 algo_dir.mkdir(parents=True, exist_ok=True)
 
                 # Copy the StrategyRuntime from lean/Algorithms
-                runtime_src = Path(__file__).parent.parent.parent / "lean" / "Algorithms" / "StrategyRuntime.py"
+                runtime_src = (
+                    Path(__file__).parent.parent.parent
+                    / "lean"
+                    / "Algorithms"
+                    / "StrategyRuntime.py"
+                )
                 runtime_dst = algo_dir / "StrategyRuntime.py"
                 shutil.copy(runtime_src, runtime_dst)
 
@@ -190,15 +194,6 @@ class BacktestService:
                     message=f"Backtest completed with {len(candles)} candles",
                 )
 
-        except ImportError as e:
-            logger.error(f"Missing dependency: {e}")
-            return BacktestResult(
-                status="error",
-                strategy_id=request.strategy_id,
-                start_date=request.start_date,
-                end_date=request.end_date,
-                error=f"Missing dependency: {e}. Install vibe-trade-data.",
-            )
         except Exception as e:
             logger.error(f"Backtest failed: {e}", exc_info=True)
             return BacktestResult(

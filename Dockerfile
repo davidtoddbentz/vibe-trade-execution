@@ -1,47 +1,33 @@
-# Custom LEAN Docker image with Pub/Sub support
-FROM quantconnect/lean:latest
+# Execution Service - Orchestrates backtests via Cloud Run Jobs
+FROM python:3.11-slim
 
-# Install Python dependencies for Pub/Sub
-# Try multiple Python paths since LEAN may use different Python installations
-RUN (python3 -m pip install --no-cache-dir google-cloud-pubsub>=2.18.0 2>/dev/null || \
-     python -m pip install --no-cache-dir google-cloud-pubsub>=2.18.0 2>/dev/null || \
-     pip install --no-cache-dir google-cloud-pubsub>=2.18.0 2>/dev/null || \
-     /usr/bin/python3 -m pip install --no-cache-dir google-cloud-pubsub>=2.18.0 2>/dev/null) && \
-    echo "Pub/Sub library installation attempted"
+WORKDIR /workspace
 
-# Install .NET SDK for compiling C# handler (if not already present)
-RUN dotnet --version || echo ".NET SDK check"
+# Install git (needed for Git-based dependencies)
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
-# Create directories for our custom data feeds
-RUN mkdir -p /Lean/DataFeeds /Lean/CustomDataQueueHandler
+# Install uv for linux/amd64
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN chmod +x /usr/local/bin/uv
 
-# Copy C# data queue handler source
-COPY lean/DataFeeds/PubSubDataQueueHandler.cs /Lean/CustomDataQueueHandler/
+# Copy the execution service project
+COPY vibe-trade-execution/ ./vibe-trade-execution/
+WORKDIR /workspace/vibe-trade-execution
 
-# Copy Python data feeds
-COPY lean/DataFeeds/PubSubCandle.py /Lean/DataFeeds/
-COPY lean/DataFeeds/PubSubDataQueueHandler.py /Lean/DataFeeds/
-COPY lean/DataFeeds/__init__.py /Lean/DataFeeds/
-
-# Copy C# project file
-COPY lean/DataFeeds/PubSubDataQueueHandler.csproj /Lean/CustomDataQueueHandler/
-
-# Compile C# handler (if dotnet is available)
-# The compiled DLL will be placed where LEAN can find it
-RUN if command -v dotnet >/dev/null 2>&1; then \
-        echo "Compiling C# data queue handler..."; \
-        cd /Lean/CustomDataQueueHandler && \
-        dotnet restore && \
-        dotnet build -c Release && \
-        cp bin/Release/net10.0/PubSubDataQueueHandler.dll /Lean/Launcher/bin/Debug/ 2>/dev/null || \
-        cp bin/Release/net*/PubSubDataQueueHandler.dll /Lean/Launcher/bin/Debug/ 2>/dev/null || \
-        echo "⚠️  DLL not found after build"; \
-        echo "✅ C# handler compilation attempted"; \
-    else \
-        echo "⚠️  dotnet not found - C# handler will need manual compilation"; \
+# Install dependencies
+# GITHUB_TOKEN is required for private repos (vibe-trade-shared, vibe-trade-data)
+ARG GITHUB_TOKEN
+RUN if [ -n "$GITHUB_TOKEN" ]; then \
+        git config --global url."https://$GITHUB_TOKEN@github.com/".insteadOf "https://github.com/"; \
+    fi && \
+    uv sync --no-dev --frozen --python 3.11 && \
+    if [ -n "$GITHUB_TOKEN" ]; then \
+        git config --global --unset url."https://$GITHUB_TOKEN@github.com/".insteadOf; \
     fi
 
-# Note: We preserve the base image's entrypoint and working directory
-# The base image uses /Lean/Launcher/bin/Debug as working directory
-# We don't change WORKDIR to preserve the base image's configuration
+# Expose port (Cloud Run uses PORT env var, default to 8080)
+ENV PORT=8080
+EXPOSE 8080
 
+# Run the FastAPI server
+CMD ["sh", "-c", ".venv/bin/python -m uvicorn src.main:app --host 0.0.0.0 --port ${PORT:-8080}"]

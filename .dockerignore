@@ -18,8 +18,9 @@ venv/
 *.md
 tests/
 lean/Results/
-lean/Data/
 schema_bt/
-src/
 *.lock
+
+# For Dockerfile (execution service), ignore most of src except data module
+# Note: Dockerfile.lean needs src/data/ and lean/Data/
 

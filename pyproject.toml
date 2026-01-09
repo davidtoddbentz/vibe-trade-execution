@@ -7,9 +7,16 @@ requires-python = ">=3.10"
 dependencies = [
     "jsonschema>=4.20.0",
     "google-cloud-pubsub>=2.18.0",
+    "google-cloud-run>=0.10.0",
+    "google-cloud-storage>=2.14.0",
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "python-dotenv>=1.0.0",
     "vibe-trade-shared @ git+https://github.com/davidtoddbentz/vibe-trade-shared.git@main",
-    "vibe-trade-data @ git+https://github.com/davidtoddbentz/vibe-trade-data.git@main",
+    "fastavro>=1.9.0",
+    "pydantic>=2.0.0",
 ]
+
 authors = [
     {name = "Vibe Trade", email = "dev@vibe-trade.com"},
 ]

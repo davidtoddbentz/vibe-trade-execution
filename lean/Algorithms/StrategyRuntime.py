@@ -53,17 +53,42 @@ class CompareOp(str, Enum):
 class CustomCryptoData(PythonData):
     """Custom data reader for cryptocurrency CSV files."""
 
+    # Class variable to hold the data folder path - set by algorithm
+    DataFolder = "/Data"
+
+    # Debug log file path
+    DebugLogPath = None
+
+    @staticmethod
+    def _log_debug(msg):
+        """Write debug message to log file."""
+        if CustomCryptoData.DebugLogPath:
+            try:
+                with open(CustomCryptoData.DebugLogPath, "a") as f:
+                    f.write(msg + "\n")
+            except:
+                pass
+
     def GetSource(self, config, date, isLiveMode):
-        """Return the data source - CSV file in /Data directory."""
-        # Convert symbol to filename (e.g., BTCUSD -> btc_usd_data.csv)
-        symbol = str(config.Symbol.Value).lower()
-        if symbol.endswith("usd"):
-            base = symbol[:-3]
-            filename = f"{base}_usd_data.csv"
-        else:
-            filename = f"{symbol}_data.csv"
+        """Return the data source - CSV file in data directory."""
+        import os
+        # Convert symbol to filename (e.g., BTC-USD -> btc_usd_data.csv)
+        # Symbol.ID.Symbol may include data type suffix (e.g., "BTC-USD.CustomCryptoData")
+        # We need to strip the suffix to get the base symbol
+        symbol = str(config.Symbol.ID.Symbol).lower()
+        # Strip the data type suffix if present (e.g., ".customcryptodata")
+        if "." in symbol:
+            symbol = symbol.split(".")[0]
+        # Normalize: replace dashes with underscores
+        symbol_normalized = symbol.replace("-", "_")
+        filename = f"{symbol_normalized}_data.csv"
+        # Use full path - data folder is set by the algorithm
+        full_path = f"{CustomCryptoData.DataFolder}/{filename}"
+        # Log for debugging
+        exists = os.path.exists(full_path)
+        CustomCryptoData._log_debug(f"[GetSource] DataFolder: {CustomCryptoData.DataFolder}, Symbol: {symbol}, Date: {date}, File: {full_path}, Exists: {exists}")
         return SubscriptionDataSource(
-            f"/Data/{filename}",
+            full_path,
             SubscriptionTransportMedium.LocalFile,
             FileFormat.Csv
         )
@@ -84,7 +109,8 @@ class CustomCryptoData(PythonData):
             data["Low"] = float(parts[3])
             data["Close"] = float(parts[4])
             data["Volume"] = float(parts[5])
-        except Exception:
+        except Exception as e:
+            CustomCryptoData._log_debug(f"[Reader] Error parsing line: {line[:50]}... Error: {e}")
             return None
         return data
 
@@ -99,26 +125,89 @@ class StrategyRuntime(QCAlgorithm):
 
     def Initialize(self):
         """Initialize the algorithm."""
-        # Default backtest period
-        self.SetStartDate(2024, 1, 1)
-        self.SetEndDate(2024, 12, 31)
-        self.SetCash(100000)
+        # Set data folder FIRST - before any subscriptions
+        data_folder = self.GetParameter("data_folder")
+        if data_folder:
+            CustomCryptoData.DataFolder = data_folder
+            self.Log(f"[INIT] Set data folder to: {data_folder}")
+        else:
+            self.Log(f"[INIT] No data_folder parameter, using default: {CustomCryptoData.DataFolder}")
+
+        # Debug: List files in data folder
+        import os
+        # Set up debug log in data folder
+        CustomCryptoData.DebugLogPath = os.path.join(CustomCryptoData.DataFolder, "debug.log")
+        self.Debug(f"[INIT] Debug log path: {CustomCryptoData.DebugLogPath}")
+        CustomCryptoData._log_debug(f"[INIT] Debug logging initialized at {CustomCryptoData.DataFolder}")
+
+        try:
+            files = os.listdir(CustomCryptoData.DataFolder)
+            self.Debug(f"[INIT] Files in data folder: {files}")
+            # Check for btc_usd_data.csv specifically
+            expected_file = os.path.join(CustomCryptoData.DataFolder, "btc_usd_data.csv")
+            if os.path.exists(expected_file):
+                self.Debug(f"[INIT] ✅ Found btc_usd_data.csv")
+                # Read first few lines to verify format
+                with open(expected_file, 'r') as f:
+                    lines = f.readlines()[:3]
+                    for i, line in enumerate(lines):
+                        self.Debug(f"[INIT] Line {i}: {line.strip()}")
+            else:
+                self.Debug(f"[INIT] ❌ btc_usd_data.csv NOT FOUND at {expected_file}")
+        except Exception as e:
+            self.Debug(f"[INIT] Error listing data folder: {e}")
+
+        # Get date parameters (format: YYYYMMDD)
+        start_date_str = self.GetParameter("start_date")
+        end_date_str = self.GetParameter("end_date")
+        initial_cash_str = self.GetParameter("initial_cash")
+
+        self.Debug(f"start_date parameter: {start_date_str}")
+        self.Debug(f"end_date parameter: {end_date_str}")
+        self.Debug(f"initial_cash parameter: {initial_cash_str}")
+
+        # Parse dates or use defaults
+        if start_date_str:
+            year = int(start_date_str[:4])
+            month = int(start_date_str[4:6])
+            day = int(start_date_str[6:8])
+            self.SetStartDate(year, month, day)
+        else:
+            self.SetStartDate(2024, 1, 1)
+
+        if end_date_str:
+            year = int(end_date_str[:4])
+            month = int(end_date_str[4:6])
+            day = int(end_date_str[6:8])
+            self.SetEndDate(year, month, day)
+        else:
+            self.SetEndDate(2024, 12, 31)
+
+        if initial_cash_str:
+            self.SetCash(float(initial_cash_str))
+        else:
+            self.SetCash(100000)
 
         # Load strategy IR
         ir_json = self.GetParameter("strategy_ir")
+        self.Debug(f"strategy_ir parameter: {ir_json}")
         if ir_json:
             self.ir = json.loads(ir_json)
         else:
             # Try loading from file (parameter or default path)
             ir_path = self.GetParameter("strategy_ir_path")
+            self.Debug(f"strategy_ir_path parameter: {ir_path}")
             if not ir_path:
                 # Default path for backtest service
                 ir_path = "/Data/strategy_ir.json"
+            self.Debug(f"Loading IR from: {ir_path}")
             self.ir = self._load_ir_from_file(ir_path)
 
         # Set resolution (must be before _add_symbol which uses it)
         resolution_str = self.ir.get("resolution", "Hour")
         self.resolution = getattr(Resolution, resolution_str.capitalize(), Resolution.Hour)
+
+        # Data folder was set at the beginning of Initialize
 
         # Set up symbol
         symbol_str = self.ir.get("symbol", "BTC-USD")
@@ -168,38 +257,39 @@ class StrategyRuntime(QCAlgorithm):
             ind_type = ind_def.get("type")
             ind_id = ind_def.get("id")
 
+            # All indicators use named resolution parameter to avoid signature issues
             if ind_type == "EMA":
                 period = ind_def.get("period", 20)
-                self.indicators[ind_id] = self.EMA(self.symbol, period, self.resolution)
+                self.indicators[ind_id] = self.EMA(self.symbol, period, resolution=self.resolution)
             elif ind_type == "SMA":
                 period = ind_def.get("period", 20)
-                self.indicators[ind_id] = self.SMA(self.symbol, period, self.resolution)
+                self.indicators[ind_id] = self.SMA(self.symbol, period, resolution=self.resolution)
             elif ind_type == "BB":
                 period = ind_def.get("period", 20)
                 mult = ind_def.get("multiplier", 2.0)
-                self.indicators[ind_id] = self.BB(self.symbol, period, mult, self.resolution)
+                self.indicators[ind_id] = self.BB(self.symbol, period, mult, resolution=self.resolution)
             elif ind_type == "KC":
                 period = ind_def.get("period", 20)
                 mult = ind_def.get("multiplier", 2.0)
-                self.indicators[ind_id] = self.KeltnerChannels(self.symbol, period, mult, self.resolution)
+                self.indicators[ind_id] = self.KCH(self.symbol, period, mult, resolution=self.resolution)
             elif ind_type == "ATR":
                 period = ind_def.get("period", 14)
-                self.indicators[ind_id] = self.ATR(self.symbol, period, self.resolution)
+                self.indicators[ind_id] = self.ATR(self.symbol, period, resolution=self.resolution)
             elif ind_type == "MAX":
                 period = ind_def.get("period", 50)
-                self.indicators[ind_id] = self.MAX(self.symbol, period, self.resolution)
+                self.indicators[ind_id] = self.MAX(self.symbol, period, resolution=self.resolution)
             elif ind_type == "MIN":
                 period = ind_def.get("period", 50)
-                self.indicators[ind_id] = self.MIN(self.symbol, period, self.resolution)
+                self.indicators[ind_id] = self.MIN(self.symbol, period, resolution=self.resolution)
             elif ind_type == "ROC":
                 period = ind_def.get("period", 1)
-                self.indicators[ind_id] = self.ROC(self.symbol, period, self.resolution)
+                self.indicators[ind_id] = self.ROC(self.symbol, period, resolution=self.resolution)
             elif ind_type == "ADX":
                 period = ind_def.get("period", 14)
-                self.indicators[ind_id] = self.ADX(self.symbol, period, self.resolution)
+                self.indicators[ind_id] = self.ADX(self.symbol, period, resolution=self.resolution)
             elif ind_type == "DC":
                 period = ind_def.get("period", 20)
-                self.indicators[ind_id] = self.DCH(self.symbol, period, self.resolution)
+                self.indicators[ind_id] = self.DCH(self.symbol, period, resolution=self.resolution)
             elif ind_type == "VWAP":
                 period = ind_def.get("period", 0)
                 if period == 0:
