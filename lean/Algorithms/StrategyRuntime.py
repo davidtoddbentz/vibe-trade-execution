@@ -237,6 +237,7 @@ class StrategyRuntime(QCAlgorithm):
         self.equity_curve = []  # Portfolio value over time
         self.peak_equity = float(initial_cash_str) if initial_cash_str else 100000
         self.max_drawdown = 0.0
+        self.bar_count = 0  # Count bars for equity sampling
 
         self.Log(f"✅ StrategyRuntime initialized")
         self.Log(f"   Strategy: {self.ir.get('strategy_name', 'Unknown')}")
@@ -294,6 +295,14 @@ class StrategyRuntime(QCAlgorithm):
             elif ind_type == "ADX":
                 period = ind_def.get("period", 14)
                 self.indicators[ind_id] = self.ADX(self.symbol, period, resolution=self.resolution)
+            elif ind_type == "RSI":
+                period = ind_def.get("period", 14)
+                self.indicators[ind_id] = self.RSI(self.symbol, period, resolution=self.resolution)
+            elif ind_type == "MACD":
+                fast = ind_def.get("fast_period", 12)
+                slow = ind_def.get("slow_period", 26)
+                signal = ind_def.get("signal_period", 9)
+                self.indicators[ind_id] = self.MACD(self.symbol, fast, slow, signal, resolution=self.resolution)
             elif ind_type == "DC":
                 period = ind_def.get("period", 20)
                 self.indicators[ind_id] = self.DCH(self.symbol, period, resolution=self.resolution)
@@ -405,6 +414,7 @@ class StrategyRuntime(QCAlgorithm):
 
     def _track_equity(self, bar):
         """Track portfolio equity for equity curve."""
+        self.bar_count += 1
         equity = self.Portfolio.TotalPortfolioValue
         cash = self.Portfolio.Cash
         holdings = equity - cash
@@ -416,8 +426,8 @@ class StrategyRuntime(QCAlgorithm):
         if drawdown > self.max_drawdown:
             self.max_drawdown = drawdown
 
-        # Sample equity curve (every 10 bars to keep size manageable)
-        if len(self.equity_curve) == 0 or len(self.equity_curve) % 10 == 0:
+        # Sample equity curve (every 60 bars ~= hourly for minute data)
+        if self.bar_count == 1 or self.bar_count % 60 == 0:
             self.equity_curve.append({
                 "time": str(self.Time),
                 "equity": float(equity),
@@ -631,9 +641,19 @@ class StrategyRuntime(QCAlgorithm):
 
         elif val_type == "indicator":
             ind_id = value_ref.get("indicator_id")
+            field = value_ref.get("field")  # Optional field for multi-value indicators
             # First check regular indicators
             ind = self.indicators.get(ind_id)
             if ind:
+                # Handle MACD fields
+                if field == "signal" and hasattr(ind, 'Signal'):
+                    return ind.Signal.Current.Value
+                elif field == "histogram" and hasattr(ind, 'Histogram'):
+                    return ind.Histogram.Current.Value
+                elif field == "macd" and hasattr(ind, 'Fast'):
+                    # MACD line = Fast - Slow internally, but .Current.Value gives us the MACD line
+                    return ind.Current.Value
+                # Default: return the main value
                 return ind.Current.Value
             # Check volume SMA indicators
             vol_data = self.vol_sma_indicators.get(ind_id)
@@ -1001,8 +1021,9 @@ class StrategyRuntime(QCAlgorithm):
             "equity_curve": self.equity_curve,
         }
 
-        # Write to results directory
-        output_path = "/workspace/Results/strategy_output.json"
+        # Write to data folder (same location as strategy_ir.json and debug.log)
+        import os
+        output_path = os.path.join(CustomCryptoData.DataFolder, "strategy_output.json")
         try:
             with open(output_path, "w") as f:
                 json.dump(output, f, indent=2)

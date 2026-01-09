@@ -46,8 +46,13 @@ lean/Results/log.txt
 lean/Results/live-test/
 
 # Test-generated data
-lean/Data/e2e_*/
+lean/Data/e2e_*.csv
+lean/Algorithms/e2e_*.json
 lean/Algorithms/E2E*.py
+test_backtest/
+
+# Environment
+.env
 
 # uv lock file (optional, some projects track it)
 # uv.lock

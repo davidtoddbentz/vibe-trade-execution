@@ -1,12 +1,14 @@
 .PHONY: install locally run test test-cov lint lint-fix format format-check check ci clean \
 	backtest lean-setup lean-test lean-backtest lean-list lean-start lean-stop lean-logs \
-	build-image docker-build docker-build-lean docker-push docker-build-push deploy force-revision
+	build-image docker-build docker-build-lean docker-build-lean-service docker-push docker-build-push \
+	deploy deploy-lean deploy-backtest-service force-revision
 
 # Default variables
 PROJECT_ID ?= vibe-trade-475704
 REGION ?= us-central1
 SERVICE_IMAGE ?= $(REGION)-docker.pkg.dev/$(PROJECT_ID)/vibe-trade-execution/vibe-trade-execution:latest
 LEAN_IMAGE ?= $(REGION)-docker.pkg.dev/$(PROJECT_ID)/vibe-trade-lean/vibe-trade-lean:latest
+BACKTEST_SERVICE_IMAGE ?= $(REGION)-docker.pkg.dev/$(PROJECT_ID)/vibe-trade-lean/vibe-trade-backtest:latest
 
 install:
 	@echo "📦 Installing dependencies..."
@@ -139,10 +141,45 @@ deploy: docker-build-push force-revision
 	@echo ""
 	@echo "✅ Execution service deployment complete!"
 
-# Deploy LEAN image only
+# Deploy LEAN image only (for Cloud Run Jobs)
 deploy-lean: docker-build-push-lean
 	@echo ""
 	@echo "✅ LEAN image deployed!"
+
+# Build backtest service image (HTTP-based, for Cloud Run Service)
+docker-build-lean-service:
+	@echo "🏗️  Building backtest service image..."
+	@echo "   Image: $(BACKTEST_SERVICE_IMAGE)"
+	@DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
+		-f Dockerfile.lean-service \
+		-t $(BACKTEST_SERVICE_IMAGE) \
+		.
+	@echo "✅ Build complete"
+
+docker-push-backtest-service:
+	@echo "📤 Pushing backtest service image..."
+	docker push $(BACKTEST_SERVICE_IMAGE)
+	@echo "✅ Push complete"
+
+# Deploy backtest service (warm Cloud Run Service with min-instances)
+deploy-backtest-service: docker-build-lean-service docker-push-backtest-service
+	@echo "🚀 Deploying backtest service to Cloud Run..."
+	gcloud run deploy vibe-trade-backtest \
+		--image=$(BACKTEST_SERVICE_IMAGE) \
+		--region=$(REGION) \
+		--project=$(PROJECT_ID) \
+		--platform=managed \
+		--concurrency=1 \
+		--min-instances=1 \
+		--max-instances=10 \
+		--cpu-throttling \
+		--memory=4Gi \
+		--cpu=2 \
+		--timeout=3600 \
+		--no-allow-unauthenticated \
+		--service-account=vibe-trade-lean-job-runner@$(PROJECT_ID).iam.gserviceaccount.com
+	@echo ""
+	@echo "✅ Backtest service deployed!"
 
 # Deploy both execution service and LEAN image
 deploy-all: docker-build docker-build-lean docker-push docker-push-lean force-revision
