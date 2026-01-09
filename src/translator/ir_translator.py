@@ -4,12 +4,12 @@ Converts vibe-trade Strategy/Card models to StrategyIR for the LEAN runtime.
 This replaces string-based code generation with typed data structures.
 """
 
-from dataclasses import dataclass
 from typing import Any
 
 from vibe_trade_shared.models import Card, Strategy
 
 from .archetype_expander import ArchetypeExpander
+from .ir_validator import validate_ir
 from .ir import (
     ADX,
     ATR,
@@ -63,12 +63,10 @@ from .ir import (
 )
 
 
-@dataclass
-class IRTranslationResult:
-    """Result of translating a strategy to IR."""
+class TranslationError(Exception):
+    """Raised when strategy translation fails."""
 
-    ir: StrategyIR
-    warnings: list[str]
+    pass
 
 
 class IRTranslator:
@@ -104,7 +102,6 @@ class IRTranslator:
         """
         self.strategy = strategy
         self.cards = cards
-        self.warnings: list[str] = []
 
         # Get first symbol from universe (MVP: single asset)
         self.symbol = strategy.universe[0] if strategy.universe else "BTC-USD"
@@ -113,22 +110,25 @@ class IRTranslator:
         self._indicators: dict[str, Indicator] = {}
         self._state_vars: dict[str, StateVar] = {}
         self._on_bar_hooks: list[StateOp] = []
+        self._on_bar_invested_ops: list[StateOp] = []
         self._exit_counter = 0
         self._sequence_counter = 0
 
         # Archetype expander for converting specialized archetypes to primitives
         self._expander = ArchetypeExpander()
 
-    def translate(self) -> IRTranslationResult:
+    def translate(self) -> StrategyIR:
         """Translate the strategy to IR.
 
         Returns:
-            IRTranslationResult with the IR and any warnings
+            StrategyIR - valid, executable strategy IR
+
+        Raises:
+            TranslationError: If translation fails for any reason
         """
         entry: EntryRule | None = None
         exits: list[ExitRule] = []
         gates: list[Gate] = []
-        on_bar_invested: list[StateOp] = []
 
         # Process attachments by role
         for attachment in self.strategy.attachments:
@@ -137,8 +137,7 @@ class IRTranslator:
 
             card = self.cards.get(attachment.card_id)
             if not card:
-                self.warnings.append(f"Card not found: {attachment.card_id}")
-                continue
+                raise TranslationError(f"Card not found: {attachment.card_id}")
 
             # Merge card slots with attachment overrides
             slots = {**card.slots, **attachment.overrides}
@@ -157,7 +156,7 @@ class IRTranslator:
                 if translated:
                     gates.append(translated)
             elif attachment.role == "overlay":
-                self.warnings.append(f"Overlay translation not yet implemented: {card.type}")
+                raise TranslationError(f"Overlay translation not yet implemented: {card.type}")
 
         # Determine resolution from first entry card's context
         resolution = Resolution.HOUR
@@ -181,10 +180,16 @@ class IRTranslator:
             entry=entry,
             exits=exits,
             on_bar=self._on_bar_hooks,
-            on_bar_invested=on_bar_invested,
+            on_bar_invested=self._on_bar_invested_ops,
         )
 
-        return IRTranslationResult(ir=ir, warnings=self.warnings)
+        # Validate IR for referential integrity - fail fast if invalid
+        validation_result = validate_ir(ir)
+        if not validation_result.is_valid:
+            errors = "; ".join(f"{e.path}: {e.message}" for e in validation_result.errors)
+            raise TranslationError(f"Invalid IR produced: {errors}")
+
+        return ir
 
     # =========================================================================
     # Entry Translation
@@ -213,12 +218,7 @@ class IRTranslator:
         card_dict = {"type_id": archetype, "slots": slots}
         expanded, provenance = self._expander.expand(card_dict)
 
-        if provenance:
-            # Log the expansion for debugging
-            self.warnings.append(
-                f"Expanded {archetype} → {expanded['type_id']} "
-                f"(provenance: {provenance['source_archetype']})"
-            )
+        # Expansion is transparent - no logging needed
 
         return expanded["type_id"], expanded.get("slots", slots)
 
@@ -253,8 +253,7 @@ class IRTranslator:
         if handler:
             return handler(expanded_slots)
         else:
-            self.warnings.append(f"Unsupported entry archetype: {archetype}")
-            return None
+            raise TranslationError(f"Unsupported entry archetype: {archetype}")
 
     def _entry_rule_trigger(self, slots: dict[str, Any]) -> EntryRule | None:
         """Translate entry.rule_trigger archetype."""
@@ -266,8 +265,7 @@ class IRTranslator:
 
         condition = self._translate_condition(condition_spec)
         if condition is None:
-            self.warnings.append("Could not translate condition for entry.rule_trigger")
-            return None
+            raise TranslationError("Could not translate condition for entry.rule_trigger")
 
         # Build action based on direction
         allocation = 0.95 if direction == "long" else -0.95
@@ -413,7 +411,7 @@ class IRTranslator:
             card_dict = {"type_id": archetype, "slots": slots}
             expanded, provenance = self._expander.expand(card_dict)
             if provenance:
-                self.warnings.append(f"Expanded {archetype} -> {expanded['type_id']}")
+                # Successfully expanded - use the expanded form
                 archetype = expanded["type_id"]
                 slots = expanded["slots"]
 
@@ -427,8 +425,7 @@ class IRTranslator:
         if handler:
             return handler(slots)
         else:
-            self.warnings.append(f"Unsupported exit archetype: {archetype}")
-            return None
+            raise TranslationError(f"Unsupported exit archetype: {archetype}")
 
     def _exit_rule_trigger(self, slots: dict[str, Any]) -> ExitRule | None:
         """Translate exit.rule_trigger archetype."""
@@ -444,13 +441,9 @@ class IRTranslator:
             tp_pct = risk.get("tp_pct")
 
             if sl_pct and tp_pct:
-                # Note: For percentage-based stops, we'd need portfolio access
-                # For now, use a placeholder condition
-                self.warnings.append("Percentage-based TP/SL not yet implemented in IR")
-                return None
+                raise TranslationError("Percentage-based TP/SL not yet implemented in IR")
             else:
-                self.warnings.append("Could not translate condition for exit.rule_trigger")
-                return None
+                raise TranslationError("Could not translate condition for exit.rule_trigger")
 
         self._exit_counter += 1
 
@@ -475,14 +468,21 @@ class IRTranslator:
         # Add state for tracking highest since entry
         self._add_state("highest_since_entry", StateType.FLOAT, None)
 
+        # Add on_bar_invested hook to update highest_since_entry with current high
+        self._on_bar_invested_ops.append(
+            MaxStateOp(
+                state_id="highest_since_entry",
+                value=PriceValue(field=PriceField.HIGH),
+            )
+        )
+
         # Trailing stop: exit if price < highest - (mult * ATR)
         condition = CompareCondition(
             left=PriceValue(field=PriceField.CLOSE),
             op=CompareOp.LT,
             right=ExpressionValue(
                 op="-",
-                left=IndicatorValue(indicator_id="highest_since_entry_state"),
-                # This is a simplification - in reality we'd use state value
+                left=StateValue(state_id="highest_since_entry"),
                 right=ExpressionValue(
                     op="*",
                     left=IndicatorValue(indicator_id="atr"),
@@ -551,8 +551,7 @@ class IRTranslator:
         if archetype == "gate.regime":
             return self._gate_regime(slots)
         else:
-            self.warnings.append(f"Unsupported gate archetype: {archetype}")
-            return None
+            raise TranslationError(f"Unsupported gate archetype: {archetype}")
 
     def _gate_regime(self, slots: dict[str, Any]) -> Gate | None:
         """Translate gate.regime archetype."""
@@ -858,16 +857,9 @@ class IRTranslator:
             # Requires tracking previous close via rolling window
             self._add_indicator(RollingWindow(id="prev_close", period=2, field=PriceField.CLOSE))
             # The rolling window stores [current, previous] - we need index 1
-            # For now, we use a state-based approach with the runtime
-            # This metric requires special runtime support
-            self.warnings.append(
-                "gap_pct metric requires runtime state tracking. "
-                "Ensure StrategyRuntime supports RollingWindow indicator."
-            )
-            return RegimeCondition(
-                metric=metric,
-                op=op,
-                value=float(value) if isinstance(value, (int, float)) else value,
+            # gap_pct requires tracking previous close - not yet implemented
+            raise TranslationError(
+                "gap_pct metric requires runtime state tracking for previous close"
             )
 
         # =================================================================
@@ -1000,8 +992,7 @@ class IRTranslator:
                     )
                 )
             else:
-                self.warnings.append(f"Unknown session_phase value: {phase}")
-                return None
+                raise TranslationError(f"Unknown session_phase value: {phase}")
 
         # =================================================================
         # Price Level Metrics
@@ -1032,8 +1023,7 @@ class IRTranslator:
                 # Dynamic level reference
                 return self._price_level_touch_dynamic(level_ref, lookback)
             else:
-                self.warnings.append("price_level_touch requires level_price or level_reference")
-                return None
+                raise TranslationError("price_level_touch requires level_price or level_reference")
 
         elif metric == "price_level_cross":
             # Price crosses a level in specified direction
@@ -1060,8 +1050,7 @@ class IRTranslator:
             elif level_ref:
                 return self._price_level_cross_dynamic(level_ref, direction, lookback)
             else:
-                self.warnings.append("price_level_cross requires level_price or level_reference")
-                return None
+                raise TranslationError("price_level_cross requires level_price or level_reference")
 
         # =================================================================
         # Complex Pattern Metrics (require runtime state machines)
@@ -1140,7 +1129,7 @@ class IRTranslator:
         # =================================================================
         elif metric == "risk_event_prob":
             # Risk event probability requires external data feed
-            self.warnings.append(
+            raise TranslationError(
                 "risk_event_prob metric requires external calendar data. "
                 "This metric will always pass."
             )
@@ -1148,8 +1137,7 @@ class IRTranslator:
 
         else:
             # Unknown metric - warn and ignore
-            self.warnings.append(f"Unknown metric '{metric}' - condition will always pass.")
-            return None
+            raise TranslationError(f"Unknown metric '{metric}' - condition will always pass.")
 
     def _price_level_touch_dynamic(self, level_ref: str, lookback: int) -> Condition | None:
         """Handle dynamic level reference for price_level_touch."""
@@ -1193,7 +1181,7 @@ class IRTranslator:
             )
         elif level_ref in ("recent_support", "recent_resistance", "session_low", "session_high"):
             # These require more complex level detection
-            self.warnings.append(
+            raise TranslationError(
                 f"level_reference '{level_ref}' for price_level_touch requires runtime support"
             )
             return RegimeCondition(
@@ -1203,8 +1191,7 @@ class IRTranslator:
                 lookback_bars=lookback,
             )
         else:
-            self.warnings.append(f"Unknown level_reference: {level_ref}")
-            return None
+            raise TranslationError(f"Unknown level_reference: {level_ref}")
 
     def _price_level_cross_dynamic(
         self, level_ref: str, direction: str, lookback: int
@@ -1247,7 +1234,7 @@ class IRTranslator:
                     right=IndicatorValue(indicator_id="level_max"),
                 )
         elif level_ref in ("recent_support", "recent_resistance", "session_low", "session_high"):
-            self.warnings.append(
+            raise TranslationError(
                 f"level_reference '{level_ref}' for price_level_cross requires runtime support"
             )
             return RegimeCondition(
@@ -1257,8 +1244,7 @@ class IRTranslator:
                 lookback_bars=lookback,
             )
         else:
-            self.warnings.append(f"Unknown level_reference: {level_ref}")
-            return None
+            raise TranslationError(f"Unknown level_reference: {level_ref}")
 
     def _translate_band_event(self, band_event: dict[str, Any]) -> Condition | None:
         """Translate a BandEvent to IR Condition.
@@ -1284,11 +1270,20 @@ class IRTranslator:
         elif kind == "reentry":
             return self._band_reentry_condition(band_event, band_id)
         else:
-            self.warnings.append(f"Unknown band_event kind: {kind}")
-            return None
+            raise TranslationError(f"Unknown band_event kind: {kind}")
 
     def _create_band_indicator(self, band_spec: dict[str, Any]) -> str | None:
-        """Create a band indicator and return its ID."""
+        """Create a band indicator and return its ID.
+
+        Supported bands:
+        - bollinger: Bollinger Bands (middle = SMA, bands = std dev)
+        - keltner: Keltner Channel (middle = EMA, bands = ATR)
+        - donchian: Donchian Channel (high/low of N bars)
+
+        Not yet supported:
+        - vwap_band: VWAP with standard deviation bands (requires custom implementation)
+        - vwap: Plain VWAP without bands (use IndicatorValue instead)
+        """
         band_type = band_spec.get("band", "bollinger")
         length = band_spec.get("length", 20)
         mult = band_spec.get("mult", 2.0)
@@ -1302,9 +1297,15 @@ class IRTranslator:
             self._add_indicator(KeltnerChannel(id=band_id, period=length, multiplier=mult))
         elif band_type == "donchian":
             self._add_indicator(DonchianChannel(id=band_id, period=length))
+        elif band_type in ("vwap", "vwap_band"):
+            # VWAP bands require special handling - VWAP as middle line with
+            # standard deviation bands around it. This isn't a standard indicator.
+            raise TranslationError(
+                f"Band type '{band_type}' not yet implemented. "
+                "VWAP bands require custom indicator combining VWAP with std dev bands."
+            )
         else:
-            self.warnings.append(f"Unsupported band type: {band_type}")
-            return None
+            raise TranslationError(f"Unknown band type: {band_type}")
 
         return band_id
 
@@ -1341,8 +1342,7 @@ class IRTranslator:
             return self._band_cross_condition(band_id, edge, direction="out")
 
         else:
-            self.warnings.append(f"Unknown edge_event type: {event}")
-            return None
+            raise TranslationError(f"Unknown edge_event type: {event}")
 
     def _band_cross_condition(self, band_id: str, edge: str, direction: str) -> Condition:
         """Create condition for band crossing with state tracking.
@@ -1554,8 +1554,7 @@ class IRTranslator:
         - bars_since_step_N: increments after step_N_done, for timeout checking
         """
         if len(steps) < 2:
-            self.warnings.append("Sequence must have at least 2 steps")
-            return None
+            raise TranslationError("Sequence must have at least 2 steps")
 
         # Generate unique ID for this sequence
         seq_id = f"seq_{self._sequence_counter}"
@@ -1566,8 +1565,7 @@ class IRTranslator:
         for i, step in enumerate(steps):
             cond = self._translate_condition(step.get("cond", {}))
             if cond is None:
-                self.warnings.append(f"Failed to translate sequence step {i} condition")
-                return None
+                raise TranslationError(f"Failed to translate sequence step {i} condition")
             step_conditions.append(cond)
 
         # For each step (except last), create state tracking

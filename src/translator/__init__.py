@@ -24,11 +24,11 @@ from .evaluator import (
     ValueResolver,
 )
 from .ir import StrategyIR
-from .ir_translator import IRTranslationResult, IRTranslator
+from .ir_translator import IRTranslator, TranslationError
 
 __all__ = [
     "IRTranslator",
-    "IRTranslationResult",
+    "TranslationError",
     "StrategyIR",
     "ConditionEvaluator",
     "ValueResolver",

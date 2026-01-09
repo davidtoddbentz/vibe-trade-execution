@@ -12,6 +12,8 @@ NOTE: We test only the IR path which produces structured data.
 The legacy LEAN code generator (string-to-code) is deprecated.
 """
 
+import pytest
+
 from vibe_trade_shared.models import Card, Strategy
 from vibe_trade_shared.models.strategy import Attachment
 
@@ -35,7 +37,7 @@ from src.translator.ir import (
     StateValue,
     StrategyIR,
 )
-from src.translator.ir_translator import IRTranslator
+from src.translator.ir_translator import IRTranslator, TranslationError
 
 # =============================================================================
 # Basic Translator Tests
@@ -60,12 +62,11 @@ class TestIRTranslatorBasic:
         translator = IRTranslator(strategy, {})
         result = translator.translate()
 
-        assert result.ir.strategy_id == "test-001"
-        assert result.ir.strategy_name == "Empty Test"
-        assert result.ir.symbol == "BTC-USD"
-        assert result.ir.entry is None
-        assert len(result.ir.exits) == 0
-        assert len(result.warnings) == 0
+        assert result.strategy_id == "test-001"
+        assert result.strategy_name == "Empty Test"
+        assert result.symbol == "BTC-USD"
+        assert result.entry is None
+        assert len(result.exits) == 0
 
     def test_disabled_attachment_ignored(self):
         """Test that disabled attachments are not translated."""
@@ -103,7 +104,7 @@ class TestIRTranslatorBasic:
         translator = IRTranslator(strategy, cards)
         result = translator.translate()
 
-        assert result.ir.entry is None
+        assert result.entry is None
 
     def test_missing_card_warning(self):
         """Test that missing cards produce warnings."""
@@ -120,9 +121,8 @@ class TestIRTranslatorBasic:
         )
 
         translator = IRTranslator(strategy, {})
-        result = translator.translate()
-
-        assert any("not found" in w for w in result.warnings)
+        with pytest.raises(TranslationError, match="not found"):
+            translator.translate()
 
 
 # =============================================================================
@@ -208,16 +208,16 @@ class TestIRTranslatorEntryRuleTrigger:
         result = translator.translate()
 
         # Should have ROC indicator
-        assert any(isinstance(ind, RateOfChange) for ind in result.ir.indicators)
+        assert any(isinstance(ind, RateOfChange) for ind in result.indicators)
 
         # Should have entry
-        assert result.ir.entry is not None
-        assert isinstance(result.ir.entry.action, SetHoldingsAction)
-        assert result.ir.entry.action.allocation == 0.95
+        assert result.entry is not None
+        assert isinstance(result.entry.action, SetHoldingsAction)
+        assert result.entry.action.allocation == 0.95
 
         # Entry condition should be CompareCondition
-        assert isinstance(result.ir.entry.condition, CompareCondition)
-        assert result.ir.entry.condition.op == CompareOp.LTE
+        assert isinstance(result.entry.condition, CompareCondition)
+        assert result.entry.condition.op == CompareOp.LTE
 
     def test_trend_ma_relation_entry(self):
         """Test translating trend_ma_relation condition."""
@@ -263,7 +263,7 @@ class TestIRTranslatorEntryRuleTrigger:
         result = translator.translate()
 
         # Should have two EMA indicators
-        emas = [ind for ind in result.ir.indicators if isinstance(ind, EMA)]
+        emas = [ind for ind in result.indicators if isinstance(ind, EMA)]
         assert len(emas) == 2
 
         # Check periods
@@ -271,9 +271,9 @@ class TestIRTranslatorEntryRuleTrigger:
         assert periods == {20, 50}
 
         # Should have entry with CompareCondition
-        assert result.ir.entry is not None
-        assert isinstance(result.ir.entry.condition, CompareCondition)
-        assert result.ir.entry.condition.op == CompareOp.GT
+        assert result.entry is not None
+        assert isinstance(result.entry.condition, CompareCondition)
+        assert result.entry.condition.op == CompareOp.GT
 
     def test_short_direction(self):
         """Test short direction produces negative allocation."""
@@ -311,9 +311,9 @@ class TestIRTranslatorEntryRuleTrigger:
         translator = IRTranslator(strategy, cards)
         result = translator.translate()
 
-        assert result.ir.entry is not None
-        assert isinstance(result.ir.entry.action, SetHoldingsAction)
-        assert result.ir.entry.action.allocation == -0.95
+        assert result.entry is not None
+        assert isinstance(result.entry.action, SetHoldingsAction)
+        assert result.entry.action.allocation == -0.95
 
     def test_composite_allof_condition(self):
         """Test translating composite allOf conditions."""
@@ -370,9 +370,9 @@ class TestIRTranslatorEntryRuleTrigger:
         translator = IRTranslator(strategy, cards)
         result = translator.translate()
 
-        assert result.ir.entry is not None
+        assert result.entry is not None
         # Should have indicators for both conditions
-        indicator_ids = [ind.id for ind in result.ir.indicators]
+        indicator_ids = [ind.id for ind in result.indicators]
         assert "roc" in indicator_ids  # For ret_pct
         assert "ema_fast" in indicator_ids  # For trend_ma_relation
         assert "ema_slow" in indicator_ids
@@ -422,13 +422,13 @@ class TestIRTranslatorTrendPullback:
         result = translator.translate()
 
         # Should have EMA and BB indicators
-        assert any(isinstance(ind, EMA) for ind in result.ir.indicators)
-        assert any(isinstance(ind, BollingerBands) for ind in result.ir.indicators)
+        assert any(isinstance(ind, EMA) for ind in result.indicators)
+        assert any(isinstance(ind, BollingerBands) for ind in result.indicators)
 
         # Should have AllOfCondition (trend AND dip)
-        assert result.ir.entry is not None
-        assert isinstance(result.ir.entry.condition, AllOfCondition)
-        assert len(result.ir.entry.condition.conditions) == 2
+        assert result.entry is not None
+        assert isinstance(result.entry.condition, AllOfCondition)
+        assert len(result.entry.condition.conditions) == 2
 
 
 # =============================================================================
@@ -505,9 +505,9 @@ class TestIRTranslatorExits:
         result = translator.translate()
 
         # Should have one exit
-        assert len(result.ir.exits) == 1
-        assert isinstance(result.ir.exits[0].action, LiquidateAction)
-        assert result.ir.exits[0].condition.op == CompareOp.LT
+        assert len(result.exits) == 1
+        assert isinstance(result.exits[0].action, LiquidateAction)
+        assert result.exits[0].condition.op == CompareOp.LT
 
     def test_exit_band(self):
         """Test exit.band_exit archetype."""
@@ -543,11 +543,11 @@ class TestIRTranslatorExits:
         result = translator.translate()
 
         # Should have BB indicator
-        assert any(isinstance(ind, BollingerBands) for ind in result.ir.indicators)
+        assert any(isinstance(ind, BollingerBands) for ind in result.indicators)
 
         # Should have exit with upper band comparison
-        assert len(result.ir.exits) == 1
-        exit_cond = result.ir.exits[0].condition
+        assert len(result.exits) == 1
+        exit_cond = result.exits[0].condition
         assert isinstance(exit_cond, CompareCondition)
         assert exit_cond.op == CompareOp.GTE
         assert isinstance(exit_cond.right, IndicatorBandValue)
@@ -618,7 +618,7 @@ class TestIRTranslatorGates:
         result = translator.translate()
 
         # Should have gates
-        assert len(result.ir.gates) >= 1 or any("gate" in w.lower() for w in result.warnings)
+        assert len(result.gates) >= 1
 
 
 # =============================================================================
@@ -696,24 +696,21 @@ class TestIRTranslatorEMACrossover:
         translator = IRTranslator(strategy, cards)
         result = translator.translate()
 
-        # Verify no warnings
-        assert len(result.warnings) == 0, f"Unexpected warnings: {result.warnings}"
-
         # Verify metadata
-        assert result.ir.strategy_id == "strat-ema-crossover"
-        assert result.ir.strategy_name == "EMA Crossover Long"
-        assert result.ir.symbol == "BTC-USD"
-        assert result.ir.resolution == Resolution.HOUR
+        assert result.strategy_id == "strat-ema-crossover"
+        assert result.strategy_name == "EMA Crossover Long"
+        assert result.symbol == "BTC-USD"
+        assert result.resolution == Resolution.HOUR
 
         # Verify indicators - should be deduplicated
-        emas = [ind for ind in result.ir.indicators if isinstance(ind, EMA)]
+        emas = [ind for ind in result.indicators if isinstance(ind, EMA)]
         assert len(emas) == 2
         assert {ema.id for ema in emas} == {"ema_fast", "ema_slow"}
         assert {ema.period for ema in emas} == {20, 50}
 
         # Verify entry
-        assert result.ir.entry is not None
-        entry_cond = result.ir.entry.condition
+        assert result.entry is not None
+        entry_cond = result.entry.condition
         assert isinstance(entry_cond, CompareCondition)
         assert isinstance(entry_cond.left, IndicatorValue)
         assert entry_cond.left.indicator_id == "ema_fast"
@@ -722,21 +719,21 @@ class TestIRTranslatorEMACrossover:
         assert entry_cond.right.indicator_id == "ema_slow"
 
         # Verify entry action
-        assert isinstance(result.ir.entry.action, SetHoldingsAction)
-        assert result.ir.entry.action.allocation == 0.95
+        assert isinstance(result.entry.action, SetHoldingsAction)
+        assert result.entry.action.allocation == 0.95
 
         # Verify exit
-        assert len(result.ir.exits) == 1
-        exit_cond = result.ir.exits[0].condition
+        assert len(result.exits) == 1
+        exit_cond = result.exits[0].condition
         assert isinstance(exit_cond, CompareCondition)
         assert exit_cond.op == CompareOp.LT
-        assert isinstance(result.ir.exits[0].action, LiquidateAction)
+        assert isinstance(result.exits[0].action, LiquidateAction)
 
         # Verify on_fill hooks
-        assert len(result.ir.entry.on_fill) == 2  # entry_price and bars_since_entry
+        assert len(result.entry.on_fill) == 2  # entry_price and bars_since_entry
 
         # Verify state vars
-        state_ids = {sv.id for sv in result.ir.state}
+        state_ids = {sv.id for sv in result.state}
         assert "entry_price" in state_ids
         assert "bars_since_entry" in state_ids
 
@@ -783,17 +780,17 @@ class TestIRTranslatorEMACrossover:
         result = translator.translate()
 
         # Serialize to JSON
-        json_str = result.ir.to_json()
+        json_str = result.to_json()
 
         # Deserialize back
         restored = StrategyIR.from_json(json_str)
 
         # Verify roundtrip
-        assert restored.strategy_id == result.ir.strategy_id
-        assert restored.strategy_name == result.ir.strategy_name
-        assert len(restored.indicators) == len(result.ir.indicators)
+        assert restored.strategy_id == result.strategy_id
+        assert restored.strategy_name == result.strategy_name
+        assert len(restored.indicators) == len(result.indicators)
         assert restored.entry is not None
-        assert restored.entry.condition.op == result.ir.entry.condition.op
+        assert restored.entry.condition.op == result.entry.condition.op
 
 
 # =============================================================================
@@ -846,15 +843,15 @@ class TestIRTranslatorBandEvent:
         result = translator.translate()
 
         # Should have no warnings
-        assert len(result.warnings) == 0, f"Unexpected warnings: {result.warnings}"
+        # Translation succeeded without exception
 
         # Should have BB indicator
-        indicator_types = {ind.type for ind in result.ir.indicators}
+        indicator_types = {ind.type for ind in result.indicators}
         assert "BB" in indicator_types
 
         # Entry condition should be price <= lower_band
-        assert result.ir.entry is not None
-        cond = result.ir.entry.condition
+        assert result.entry is not None
+        cond = result.entry.condition
         assert isinstance(cond, CompareCondition)
         assert cond.op == CompareOp.LTE
         assert isinstance(cond.left, PriceValue)
@@ -902,14 +899,14 @@ class TestIRTranslatorBandEvent:
         translator = IRTranslator(strategy, cards)
         result = translator.translate()
 
-        assert len(result.warnings) == 0
+        # Translation succeeded without exception
 
         # Should have KC indicator
-        indicator_types = {ind.type for ind in result.ir.indicators}
+        indicator_types = {ind.type for ind in result.indicators}
         assert "KC" in indicator_types
 
         # Condition should be price >= upper_band
-        cond = result.ir.entry.condition
+        cond = result.entry.condition
         assert isinstance(cond, CompareCondition)
         assert cond.op == CompareOp.GTE
         assert cond.right.band == BandField.UPPER
@@ -955,10 +952,10 @@ class TestIRTranslatorBandEvent:
         translator = IRTranslator(strategy, cards)
         result = translator.translate()
 
-        assert len(result.warnings) == 0
+        # Translation succeeded without exception
 
         # Entry condition should be a comparison
-        cond = result.ir.entry.condition
+        cond = result.entry.condition
         assert isinstance(cond, CompareCondition)
         assert cond.op == CompareOp.LT
 
@@ -1011,21 +1008,21 @@ class TestIRTranslatorBandEvent:
         translator = IRTranslator(strategy, cards)
         result = translator.translate()
 
-        assert len(result.warnings) == 0
+        # Translation succeeded without exception
 
         # Should have state variables for tracking
-        state_ids = {s.id for s in result.ir.state}
+        state_ids = {s.id for s in result.state}
         assert any("was_" in sid for sid in state_ids), f"Expected state var, got: {state_ids}"
 
         # Should have on_bar hooks for state tracking
-        assert len(result.ir.on_bar) > 0, "Expected on_bar hooks for cross detection"
+        assert len(result.on_bar) > 0, "Expected on_bar hooks for cross detection"
 
         # on_bar should have SetStateFromConditionOp
-        op = result.ir.on_bar[0]
+        op = result.on_bar[0]
         assert isinstance(op, SetStateFromConditionOp)
 
         # Entry condition should be AllOf (state AND price condition)
-        cond = result.ir.entry.condition
+        cond = result.entry.condition
         assert isinstance(cond, AllOfCondition)
         assert len(cond.conditions) == 2
 
@@ -1069,17 +1066,17 @@ class TestIRTranslatorBandEvent:
         translator = IRTranslator(strategy, cards)
         result = translator.translate()
 
-        assert len(result.warnings) == 0
+        # Translation succeeded without exception
 
         # Should have state variables for tracking
-        state_ids = {s.id for s in result.ir.state}
+        state_ids = {s.id for s in result.state}
         assert any("was_outside" in sid for sid in state_ids)
 
         # Should have on_bar hooks
-        assert len(result.ir.on_bar) > 0
+        assert len(result.on_bar) > 0
 
         # Entry condition should be AllOf (was_outside AND crosses_middle)
-        cond = result.ir.entry.condition
+        cond = result.entry.condition
         assert isinstance(cond, AllOfCondition)
         # One condition checks state, other checks price vs middle band
         has_state_check = any(
@@ -1137,10 +1134,10 @@ class TestIRTranslatorBandEvent:
         translator = IRTranslator(strategy, cards)
         result = translator.translate()
 
-        assert len(result.warnings) == 0
+        # Translation succeeded without exception
 
         # Should have DC indicator
-        indicator_types = {ind.type for ind in result.ir.indicators}
+        indicator_types = {ind.type for ind in result.indicators}
         assert "DC" in indicator_types
 
     def test_band_event_combined_with_regime(self):
@@ -1199,15 +1196,15 @@ class TestIRTranslatorBandEvent:
         translator = IRTranslator(strategy, cards)
         result = translator.translate()
 
-        assert len(result.warnings) == 0
+        # Translation succeeded without exception
 
         # Should have EMA and BB indicators
-        indicator_types = {ind.type for ind in result.ir.indicators}
+        indicator_types = {ind.type for ind in result.indicators}
         assert "EMA" in indicator_types
         assert "BB" in indicator_types
 
         # Entry should be AllOf with two conditions
-        cond = result.ir.entry.condition
+        cond = result.entry.condition
         assert isinstance(cond, AllOfCondition)
         assert len(cond.conditions) == 2
 
@@ -1281,19 +1278,19 @@ class TestIRTranslatorSequence:
         translator = IRTranslator(strategy, cards)
         result = translator.translate()
 
-        assert len(result.warnings) == 0
+        # Translation succeeded without exception
 
         # Should have state variables for sequence tracking
-        state_ids = {sv.id for sv in result.ir.state}
+        state_ids = {sv.id for sv in result.state}
         assert "seq_0_step_0_trigger" in state_ids
         assert "seq_0_step_0_done" in state_ids
         assert "seq_0_bars_since_0" in state_ids
 
         # Should have on_bar hooks for state tracking
-        assert len(result.ir.on_bar) >= 3  # trigger, done, bars_since
+        assert len(result.on_bar) >= 3  # trigger, done, bars_since
 
         # Entry condition should be AllOf
-        cond = result.ir.entry.condition
+        cond = result.entry.condition
         assert isinstance(cond, AllOfCondition)
 
     def test_sequence_with_timeout(self):
@@ -1362,11 +1359,11 @@ class TestIRTranslatorSequence:
         translator = IRTranslator(strategy, cards)
         result = translator.translate()
 
-        assert len(result.warnings) == 0
+        # Translation succeeded without exception
 
         # Entry condition should include timeout check
         # The condition checks: step_0_done AND bars_since_0 <= 5 AND step_1_condition
-        cond = result.ir.entry.condition
+        cond = result.entry.condition
         assert isinstance(cond, AllOfCondition)
         # Should have at least 3 conditions: step_0_done, timeout check, step_1 condition
         assert len(cond.conditions) >= 3
@@ -1447,15 +1444,15 @@ class TestIRTranslatorSequence:
         translator = IRTranslator(strategy, cards)
         result = translator.translate()
 
-        assert len(result.warnings) == 0
+        # Translation succeeded without exception
 
         # Should have state for steps 0 and 1 (step 2 is the final condition)
-        state_ids = {sv.id for sv in result.ir.state}
+        state_ids = {sv.id for sv in result.state}
         assert "seq_0_step_0_done" in state_ids
         assert "seq_0_step_1_done" in state_ids
 
         # Entry condition should check both previous steps done
-        cond = result.ir.entry.condition
+        cond = result.entry.condition
         assert isinstance(cond, AllOfCondition)
 
     def test_sequence_single_step_warning(self):
@@ -1505,11 +1502,9 @@ class TestIRTranslatorSequence:
         }
 
         translator = IRTranslator(strategy, cards)
-        result = translator.translate()
-
-        # Should have warning about single-step sequence
-        assert len(result.warnings) > 0
-        assert any("at least 2" in w for w in result.warnings)
+        # Single-step sequence should raise an error
+        with pytest.raises(TranslationError, match="at least 2"):
+            translator.translate()
 
 
 # =============================================================================
@@ -1563,10 +1558,8 @@ class TestNewMetrics:
         result = translator.translate()
 
         # Should produce an allOf condition with time checks
-        assert result.ir.entry is not None
-        assert result.ir.entry.condition.type == "allOf"
-        # No errors should occur
-        assert len([w for w in result.warnings if "error" in w.lower()]) == 0
+        assert result.entry is not None
+        assert result.entry.condition.type == "allOf"
 
     def test_volume_spike_metric(self):
         """Test volume_spike metric translation."""
@@ -1610,12 +1603,12 @@ class TestNewMetrics:
         result = translator.translate()
 
         # Should have vol_sma indicator
-        indicator_types = [ind.type for ind in result.ir.indicators]
+        indicator_types = [ind.type for ind in result.indicators]
         assert "VOL_SMA" in indicator_types
 
         # Entry condition should be a compare
-        assert result.ir.entry is not None
-        assert result.ir.entry.condition.type == "compare"
+        assert result.entry is not None
+        assert result.entry.condition.type == "compare"
 
     def test_volume_dip_metric(self):
         """Test volume_dip metric translation."""
@@ -1659,13 +1652,13 @@ class TestNewMetrics:
         result = translator.translate()
 
         # Should have vol_sma indicator
-        indicator_types = [ind.type for ind in result.ir.indicators]
+        indicator_types = [ind.type for ind in result.indicators]
         assert "VOL_SMA" in indicator_types
 
         # Entry condition should compare volume < threshold
-        assert result.ir.entry is not None
-        assert result.ir.entry.condition.type == "compare"
-        assert result.ir.entry.condition.op == CompareOp.LT
+        assert result.entry is not None
+        assert result.entry.condition.type == "compare"
+        assert result.entry.condition.op == CompareOp.LT
 
     def test_price_level_touch_fixed(self):
         """Test price_level_touch metric with fixed price."""
@@ -1708,9 +1701,9 @@ class TestNewMetrics:
         result = translator.translate()
 
         # Should produce allOf with high >= level >= low
-        assert result.ir.entry is not None
-        assert result.ir.entry.condition.type == "allOf"
-        assert len(result.ir.entry.condition.conditions) == 2
+        assert result.entry is not None
+        assert result.entry.condition.type == "allOf"
+        assert len(result.entry.condition.conditions) == 2
 
     def test_price_level_cross_up(self):
         """Test price_level_cross metric with up direction."""
@@ -1754,9 +1747,9 @@ class TestNewMetrics:
         result = translator.translate()
 
         # Should produce compare condition
-        assert result.ir.entry is not None
-        assert result.ir.entry.condition.type == "compare"
-        assert result.ir.entry.condition.op == CompareOp.GT
+        assert result.entry is not None
+        assert result.entry.condition.type == "compare"
+        assert result.entry.condition.op == CompareOp.GT
 
     def test_price_level_cross_dynamic(self):
         """Test price_level_cross with dynamic level reference."""
@@ -1801,12 +1794,12 @@ class TestNewMetrics:
         result = translator.translate()
 
         # Should have RollingMinMax indicator
-        indicator_types = [ind.type for ind in result.ir.indicators]
+        indicator_types = [ind.type for ind in result.indicators]
         assert "RMM" in indicator_types
 
         # Should produce compare condition
-        assert result.ir.entry is not None
-        assert result.ir.entry.condition.type == "compare"
+        assert result.entry is not None
+        assert result.entry.condition.type == "compare"
 
     def test_liquidity_sweep_metric(self):
         """Test liquidity_sweep metric translation."""
@@ -1851,12 +1844,12 @@ class TestNewMetrics:
         result = translator.translate()
 
         # Should have RollingMinMax indicator for level tracking
-        indicator_types = [ind.type for ind in result.ir.indicators]
+        indicator_types = [ind.type for ind in result.indicators]
         assert "RMM" in indicator_types
 
         # Should produce regime condition for runtime evaluation
-        assert result.ir.entry is not None
-        assert result.ir.entry.condition.type == "regime"
+        assert result.entry is not None
+        assert result.entry.condition.type == "regime"
 
     def test_flag_pattern_metric(self):
         """Test flag_pattern metric translation."""
@@ -1901,7 +1894,7 @@ class TestNewMetrics:
         result = translator.translate()
 
         # Should have pattern indicators (ROC, ATR, MAX, MIN)
-        indicator_types = [ind.type for ind in result.ir.indicators]
+        indicator_types = [ind.type for ind in result.indicators]
         assert "ROC" in indicator_types
         assert "ATR" in indicator_types
         assert "MAX" in indicator_types
@@ -1949,13 +1942,13 @@ class TestNewMetrics:
         result = translator.translate()
 
         # Should have BB indicator
-        indicator_types = [ind.type for ind in result.ir.indicators]
+        indicator_types = [ind.type for ind in result.indicators]
         assert "BB" in indicator_types
 
         # Should produce compare condition with LT
-        assert result.ir.entry is not None
-        assert result.ir.entry.condition.type == "compare"
-        assert result.ir.entry.condition.op == CompareOp.LT
+        assert result.entry is not None
+        assert result.entry.condition.type == "compare"
+        assert result.entry.condition.op == CompareOp.LT
 
     def test_dist_from_vwap_pct(self):
         """Test dist_from_vwap_pct metric."""
@@ -1999,12 +1992,12 @@ class TestNewMetrics:
         result = translator.translate()
 
         # Should have VWAP indicator
-        indicator_types = [ind.type for ind in result.ir.indicators]
+        indicator_types = [ind.type for ind in result.indicators]
         assert "VWAP" in indicator_types
 
         # Entry condition should be a compare with expression
-        assert result.ir.entry is not None
-        assert result.ir.entry.condition.type == "compare"
+        assert result.entry is not None
+        assert result.entry.condition.type == "compare"
 
     def test_risk_event_prob_warning(self):
         """Test that risk_event_prob produces appropriate warning."""
@@ -2045,9 +2038,6 @@ class TestNewMetrics:
         }
 
         translator = IRTranslator(strategy, cards)
-        result = translator.translate()
-
-        # Should produce warning about external data
-        assert any(
-            "calendar" in w.lower() or "risk_event_prob" in w.lower() for w in result.warnings
-        )
+        # risk_event_prob requires external data and should raise an error
+        with pytest.raises(TranslationError, match="risk_event_prob|calendar"):
+            translator.translate()
