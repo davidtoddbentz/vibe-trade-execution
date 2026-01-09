@@ -12,7 +12,6 @@ import pytest
 from vibe_trade_shared.models import Card, Strategy
 from vibe_trade_shared.models.strategy import Attachment
 
-from src.lean_runner.engine import LeanEngine
 from src.translator import ConditionEvaluator, EvalContext, IRTranslator, StrategyIR
 
 # =============================================================================
@@ -135,11 +134,8 @@ class TestTranslationPipeline:
         translator = IRTranslator(strategy, cards)
         result = translator.translate()
 
-        # Verify no warnings
-        assert len(result.warnings) == 0, f"Unexpected warnings: {result.warnings}"
-
         # Step 2: Serialize to JSON
-        ir_json = result.ir.to_json()
+        ir_json = result.to_json()
         assert isinstance(ir_json, str)
         assert len(ir_json) > 100  # Should have meaningful content
 
@@ -172,16 +168,16 @@ class TestTranslationPipeline:
         # Translate and serialize
         translator = IRTranslator(strategy, cards)
         result = translator.translate()
-        ir_json = result.ir.to_json()
+        ir_json = result.to_json()
 
         # Deserialize
         restored_ir = StrategyIR.from_json(ir_json)
 
         # Verify roundtrip
-        assert restored_ir.strategy_id == result.ir.strategy_id
-        assert restored_ir.strategy_name == result.ir.strategy_name
-        assert len(restored_ir.indicators) == len(result.ir.indicators)
-        assert restored_ir.entry.action.allocation == result.ir.entry.action.allocation
+        assert restored_ir.strategy_id == result.strategy_id
+        assert restored_ir.strategy_name == result.strategy_name
+        assert len(restored_ir.indicators) == len(result.indicators)
+        assert restored_ir.entry.action.allocation == result.entry.action.allocation
 
     def test_evaluator_works_with_translated_conditions(self, ema_crossover_strategy):
         """Test that translated conditions can be evaluated."""
@@ -202,7 +198,7 @@ class TestTranslationPipeline:
         )
 
         evaluator = ConditionEvaluator()
-        entry_result = evaluator.evaluate(result.ir.entry.condition, ctx_bullish)
+        entry_result = evaluator.evaluate(result.entry.condition, ctx_bullish)
         assert entry_result is True, "Entry should trigger when EMA fast > EMA slow"
 
         # Scenario 2: EMA fast < EMA slow (should trigger exit)
@@ -215,7 +211,7 @@ class TestTranslationPipeline:
             price_bar=MockPriceBar(),
         )
 
-        exit_result = evaluator.evaluate(result.ir.exits[0].condition, ctx_bearish)
+        exit_result = evaluator.evaluate(result.exits[0].condition, ctx_bearish)
         assert exit_result is True, "Exit should trigger when EMA fast < EMA slow"
 
     def test_ir_json_compatible_with_lean_runtime(self, ema_crossover_strategy):
@@ -224,7 +220,7 @@ class TestTranslationPipeline:
 
         translator = IRTranslator(strategy, cards)
         result = translator.translate()
-        ir_dict = json.loads(result.ir.to_json())
+        ir_dict = json.loads(result.to_json())
 
         # Verify all required fields for LEAN runtime
         required_fields = [
@@ -320,16 +316,16 @@ class TestComplexStrategyTranslation:
         result = translator.translate()
 
         # Should have EMA and BB indicators
-        indicator_types = {ind.type for ind in result.ir.indicators}
+        indicator_types = {ind.type for ind in result.indicators}
         assert "EMA" in indicator_types
         assert "BB" in indicator_types
 
         # Entry should be AllOf (trend AND dip)
-        assert result.ir.entry.condition.type == "allOf"
-        assert len(result.ir.entry.condition.conditions) == 2
+        assert result.entry.condition.type == "allOf"
+        assert len(result.entry.condition.conditions) == 2
 
         # Serialize and verify
-        ir_json = result.ir.to_json()
+        ir_json = result.to_json()
         ir_dict = json.loads(ir_json)
 
         assert ir_dict["entry"]["condition"]["type"] == "allOf"
@@ -379,16 +375,16 @@ class TestComplexStrategyTranslation:
         result = translator.translate()
 
         # Should have MAX, MIN, and ATR indicators
-        indicator_types = {ind.type for ind in result.ir.indicators}
+        indicator_types = {ind.type for ind in result.indicators}
         assert "MAX" in indicator_types
         assert "MIN" in indicator_types
         assert "ATR" in indicator_types
 
         # Entry should compare price to highest
-        assert result.ir.entry.condition.type == "compare"
+        assert result.entry.condition.type == "compare"
 
         # Verify JSON
-        ir_json = result.ir.to_json()
+        ir_json = result.to_json()
         assert "highest" in ir_json
         assert "atr" in ir_json
 
@@ -442,7 +438,7 @@ class TestIRJsonFormat:
 
         translator = IRTranslator(strategy, cards)
         result = translator.translate()
-        ir_json = result.ir.to_json()
+        ir_json = result.to_json()
 
         # All these should be snake_case in JSON
         assert "strategy_id" in ir_json
@@ -469,8 +465,8 @@ class TestIRJsonFormat:
         result = translator.translate()
 
         # Default is indented
-        ir_json_pretty = result.ir.to_json(indent=2)
-        ir_json_compact = result.ir.to_json(indent=None)
+        ir_json_pretty = result.to_json(indent=2)
+        ir_json_compact = result.to_json(indent=None)
 
         # Compact should be shorter (no whitespace)
         assert len(ir_json_compact) < len(ir_json_pretty)
@@ -478,85 +474,6 @@ class TestIRJsonFormat:
 
 
 # =============================================================================
-# LEAN Backtest Integration Tests
+# NOTE: LEAN Docker tests moved to vibe-trade-lean repository
+# Integration tests here should use BacktestService HTTP calls
 # =============================================================================
-
-
-@pytest.fixture
-def lean_engine():
-    """Create LEAN engine for testing."""
-    engine = LeanEngine()
-    if not engine.check_docker_available():
-        pytest.skip("Docker/LEAN not available")
-    return engine
-
-
-class TestLeanBacktestIntegration:
-    """Test backtests with deterministic data where we know expected outcomes."""
-
-    def test_ema_crossover_deterministic(self, lean_engine):
-        """Verify EMA crossover trades correctly on deterministic data.
-
-        Data pattern:
-        - Hours 0-49: flat at $100
-        - Hours 50-59: ramp up $100→$200 (+$10/hour)
-        - Hours 60-97: flat at $200
-        - Hours 98-107: ramp down $200→$100 (-$10/hour)
-        - Hours 108-120: flat at $100
-
-        Expected trades with EMA(5)/EMA(10):
-        - BUY at Jan 3 02:00 when price jumps to $110 (fast EMA crosses above slow)
-        - SELL at Jan 5 02:00 when price drops to $190 (fast EMA crosses below slow)
-
-        Exact calculation:
-        - Starting cash: $100,000
-        - SetHoldings(0.95) → $95,000 to invest
-        - Buy @ $110 → 861 shares (LEAN rounds down)
-        - Cost: 861 × $110 = $94,710, remaining cash: $5,290
-        - Sell @ $190 → 861 × $190 = $163,590
-        - Final: $163,590 + $5,290 = $168,880
-        - Return: 68.88%
-        """
-        result = lean_engine.run_backtest(
-            algorithm_name="EmaDeterministicTest",
-            start_date="20240101",
-            end_date="20240106",
-            cash=100000.0,
-        )
-
-        assert result["status"] == "success", (
-            f"Backtest failed: {result.get('error', result.get('stderr'))}"
-        )
-
-        # Check results file
-        results_dir = Path(lean_engine.project_root) / "lean" / "Results"
-        summary_file = results_dir / "EmaDeterministicTest-summary.json"
-
-        assert summary_file.exists(), "Summary file not found"
-
-        with open(summary_file) as f:
-            summary = json.load(f)
-
-        stats = summary["statistics"]
-
-        # Exact expected values
-        end_equity = float(summary["runtimeStatistics"]["Equity"].replace("$", "").replace(",", ""))
-        assert end_equity == 168880.0, f"Expected $168,880, got ${end_equity:,.2f}"
-
-        net_profit_str = stats["Net Profit"]  # "68.880%"
-        net_profit = float(net_profit_str.replace("%", ""))
-        assert net_profit == 68.88, f"Expected 68.88% profit, got {net_profit}%"
-
-        # Exactly 2 orders (1 buy, 1 sell)
-        total_orders = int(stats["Total Orders"])
-        assert total_orders == 2, f"Expected 2 orders, got {total_orders}"
-
-        # 100% win rate (single winning trade)
-        win_rate_str = stats["Win Rate"]
-        win_rate = int(win_rate_str.replace("%", ""))
-        assert win_rate == 100, f"Expected 100% win rate, got {win_rate}%"
-
-    def test_ema_crossover_flat_market_no_trades(self, lean_engine):
-        """Verify no trades when EMAs never cross (flat market)."""
-        # This would require a separate flat-only CSV file
-        pytest.skip("Requires flat market test data")

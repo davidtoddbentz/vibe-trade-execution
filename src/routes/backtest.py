@@ -129,14 +129,13 @@ async def _run_local_backtest(
     strategy: Any,
     cards: dict[str, Any],
 ) -> BacktestResponseModel:
-    """Run backtest locally via Docker."""
+    """Run backtest locally via Docker container HTTP endpoint."""
     from src.service.backtest_service import BacktestRequest, BacktestService
 
-    logger.info(f"Backtest {backtest_id}: Running locally via Docker")
+    logger.info(f"Backtest {backtest_id}: Running via local backtest container")
 
     service = BacktestService(
-        gcs_bucket=os.getenv("GCS_BUCKET", "batch-save"),
-        lean_image=os.getenv("LEAN_IMAGE", "quantconnect/lean:latest"),
+        use_local=True,  # Uses localhost:8081
     )
 
     result = service.run_backtest(

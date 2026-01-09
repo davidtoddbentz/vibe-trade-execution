@@ -283,8 +283,4 @@ class TestArchetypeExpansionIntegration:
         result = translator.translate()
 
         # Should have an entry rule
-        assert result.ir.entry is not None
-        # Should have expansion warning (logging the expansion)
-        expansion_warnings = [w for w in result.warnings if "Expanded" in w]
-        assert len(expansion_warnings) == 1
-        assert "entry.range_mean_reversion" in expansion_warnings[0]
+        assert result.entry is not None

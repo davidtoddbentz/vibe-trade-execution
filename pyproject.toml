@@ -11,6 +11,7 @@ dependencies = [
     "google-cloud-storage>=2.14.0",
     "fastapi>=0.109.0",
     "uvicorn>=0.27.0",
+    "httpx>=0.26.0",
     "python-dotenv>=1.0.0",
     "vibe-trade-shared @ git+https://github.com/davidtoddbentz/vibe-trade-shared.git@main",
     "fastavro>=1.9.0",

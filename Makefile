@@ -1,5 +1,6 @@
 .PHONY: install locally run test test-cov lint lint-fix format format-check check ci clean \
-	backtest lean-setup lean-test lean-backtest lean-list lean-start lean-stop lean-logs \
+	backtest-container-start backtest-container-stop backtest-container-logs \
+	lean-list lean-start lean-stop lean-logs \
 	build-image docker-build docker-build-lean docker-build-lean-service docker-push docker-build-push \
 	deploy deploy-lean deploy-backtest-service force-revision
 
@@ -192,41 +193,34 @@ force-revision:
 			2>&1 | grep -E "(Deploying|revision|Service URL|Done)" || (echo "⚠️  Update may have failed or no changes needed" && exit 1)'
 
 # =============================================================================
-# LEAN Setup and Management
+# Local Backtest Container
 # =============================================================================
 
-lean-setup:
-	@echo "📦 Pulling LEAN Docker image..."
-	docker pull quantconnect/lean:latest
-	@echo "✅ LEAN setup complete!"
+# Start local backtest service container (for development)
+# The container runs on port 8081 and fetches data from GCS
+backtest-container-start:
+	@echo "🚀 Starting local backtest container..."
+	@docker run -d --name vibe-trade-backtest-local -p 8081:8080 \
+		-v ~/.config/gcloud/application_default_credentials.json:/tmp/keys/gcp-key.json:ro \
+		-e GOOGLE_APPLICATION_CREDENTIALS=/tmp/keys/gcp-key.json \
+		$(BACKTEST_SERVICE_IMAGE)
+	@echo "✅ Container started on http://localhost:8081"
+	@echo "   Health check: curl http://localhost:8081/health"
 
-lean-test:
-	@echo "🧪 Testing LEAN setup..."
-	uv run python test_lean_setup.py
+# Stop local backtest container
+backtest-container-stop:
+	@echo "🛑 Stopping local backtest container..."
+	@docker stop vibe-trade-backtest-local 2>/dev/null || true
+	@docker rm vibe-trade-backtest-local 2>/dev/null || true
+	@echo "✅ Container stopped"
 
-# Run a LEAN backtest
-# Usage: make lean-backtest ALGO=SimpleMaCrossover [START=20240101] [END=20241231] [CASH=100000]
-lean-backtest:
-	@if [ -z "$(ALGO)" ]; then \
-		echo "❌ Usage: make lean-backtest ALGO=<AlgorithmName> [START=YYYYMMDD] [END=YYYYMMDD] [CASH=amount]"; \
-		echo "   Example: make lean-backtest ALGO=SimpleMaCrossover"; \
-		exit 1; \
-	fi
-	@uv run python -c "from src.lean_runner.engine import LeanEngine; \
-		import json; \
-		engine = LeanEngine(); \
-		result = engine.run_backtest( \
-			algorithm_name='$(ALGO)', \
-			start_date='$${START:-20240101}', \
-			end_date='$${END:-20241231}', \
-			cash=$${CASH:-100000.0} \
-		); \
-		print('Status:', result.get('status')); \
-		if result.get('results_path'): \
-			print('Results:', result.get('results_path')); \
-		if result.get('error'): \
-			print('Error:', result.get('error')); \
-			exit(1)"
+# View local backtest container logs
+backtest-container-logs:
+	@docker logs -f vibe-trade-backtest-local
+
+# =============================================================================
+# Live Trading Management (via lean_runner)
+# =============================================================================
 
 # List running strategies
 lean-list:
@@ -258,47 +252,3 @@ lean-logs:
 		exit 1; \
 	fi
 	uv run python -m src.lean_runner.cli logs $(ID) --tail $${TAIL:-100}
-
-# =============================================================================
-# Local Backtest Testing
-# =============================================================================
-
-# Local test data directory
-LOCAL_TEST_DIR := $(shell pwd)/test_backtest
-
-# Run a local backtest with the LEAN Docker image
-backtest-local: docker-build-lean
-	@echo "🧪 Running local backtest..."
-	@mkdir -p $(LOCAL_TEST_DIR)/Data $(LOCAL_TEST_DIR)/Results $(LOCAL_TEST_DIR)/Algorithms
-	@# Copy StrategyRuntime
-	@cp lean/Algorithms/StrategyRuntime.py $(LOCAL_TEST_DIR)/Algorithms/
-	@# Copy LEAN data files
-	@cp -r lean/Data/* $(LOCAL_TEST_DIR)/Data/ 2>/dev/null || true
-	@# Generate test strategy IR if not exists
-	@if [ ! -f $(LOCAL_TEST_DIR)/Data/strategy_ir.json ]; then \
-		echo '{"strategy_name":"Test Strategy","symbol":"BTC-USD","resolution":"Minute","indicators":[],"entry":null,"exits":[],"gates":[],"on_bar_invested":[],"on_bar":[]}' > $(LOCAL_TEST_DIR)/Data/strategy_ir.json; \
-	fi
-	@# Create config.json
-	@echo '{"environment":"backtesting","algorithm-type-name":"StrategyRuntime","algorithm-language":"Python","algorithm-location":"/workspace/Algorithms/StrategyRuntime.py","data-folder":"/workspace/Data","results-destination-folder":"/workspace/Results","parameters":{"strategy_ir_path":"/workspace/Data/strategy_ir.json","start_date":"20260102","end_date":"20260103","initial_cash":"100000","data_folder":"/workspace/Data"},"log-handler":"QuantConnect.Logging.CompositeLogHandler","messaging-handler":"QuantConnect.Messaging.Messaging","job-queue-handler":"QuantConnect.Queues.JobQueue","api-handler":"QuantConnect.Api.Api","map-file-provider":"QuantConnect.Data.Auxiliary.LocalDiskMapFileProvider","factor-file-provider":"QuantConnect.Data.Auxiliary.LocalDiskFactorFileProvider","data-provider":"QuantConnect.Lean.Engine.DataFeeds.DefaultDataProvider","object-store":"QuantConnect.Lean.Engine.Storage.LocalObjectStore","data-aggregator":"QuantConnect.Lean.Engine.DataFeeds.AggregationManager"}' > $(LOCAL_TEST_DIR)/Algorithms/config.json
-	@echo "📁 Test directory: $(LOCAL_TEST_DIR)"
-	@echo "📊 Running LEAN..."
-	@docker run --rm \
-		-v $(LOCAL_TEST_DIR)/Data:/workspace/Data \
-		-v $(LOCAL_TEST_DIR)/Results:/workspace/Results \
-		-v $(LOCAL_TEST_DIR)/Algorithms:/workspace/Algorithms \
-		$(LEAN_IMAGE) \
-		dotnet /Lean/Launcher/bin/Debug/QuantConnect.Lean.Launcher.dll --config /workspace/Algorithms/config.json
-	@echo ""
-	@echo "✅ Backtest complete! Results in $(LOCAL_TEST_DIR)/Results/"
-
-# Fetch test data for local backtest
-backtest-fetch-data:
-	@echo "📥 Fetching test data..."
-	@mkdir -p $(LOCAL_TEST_DIR)/Data
-	@cd .. && uv run python -c "from vibe_trade_data import DataFetcher, LeanDataExporter; from datetime import datetime; f = DataFetcher('batch-save'); c = f.fetch_candles('BTC-USD', datetime(2026,1,2), datetime(2026,1,3)); e = LeanDataExporter('$(LOCAL_TEST_DIR)/Data'); e.export_candles(c, 'BTC-USD'); print(f'Exported {len(c)} candles')"
-	@echo "✅ Data fetched!"
-
-# Clean local test directory
-backtest-clean:
-	@rm -rf $(LOCAL_TEST_DIR)
-	@echo "🧹 Cleaned local test directory"

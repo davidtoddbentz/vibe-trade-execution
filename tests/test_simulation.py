@@ -314,7 +314,7 @@ class TestEmaCrossoverSimulation:
                 updated_at="2024-01-01T00:00:00Z",
             ),
         }
-        return IRTranslator(strategy, cards).translate().ir
+        return IRTranslator(strategy, cards).translate()
 
     def test_bullish_crossover_triggers_entry(self, ema_crossover_ir):
         """Entry triggers exactly when EMA fast crosses above EMA slow."""
@@ -510,7 +510,7 @@ class TestEmaCrossoverShortSimulation:
                 updated_at="2024-01-01T00:00:00Z",
             ),
         }
-        return IRTranslator(strategy, cards).translate().ir
+        return IRTranslator(strategy, cards).translate()
 
     def test_bearish_crossover_triggers_short_entry(self, ema_crossover_short_ir):
         """Short entry triggers when EMA fast crosses below EMA slow."""
@@ -589,7 +589,7 @@ class TestReturnThresholdSimulation:
                 updated_at="2024-01-01T00:00:00Z",
             ),
         }
-        return IRTranslator(strategy, cards).translate().ir
+        return IRTranslator(strategy, cards).translate()
 
     def test_entry_on_oversold(self, ret_threshold_ir):
         """Entry triggers when ROC < -5%.
@@ -676,7 +676,7 @@ class TestBreakoutSimulation:
                 updated_at="2024-01-01T00:00:00Z",
             ),
         }
-        return IRTranslator(strategy, cards).translate().ir
+        return IRTranslator(strategy, cards).translate()
 
     def test_breakout_above_highest(self, breakout_long_ir):
         """Entry triggers when price breaks above 20-bar high."""
@@ -767,7 +767,7 @@ class TestTrendPullbackSimulation:
                 updated_at="2024-01-01T00:00:00Z",
             ),
         }
-        return IRTranslator(strategy, cards).translate().ir
+        return IRTranslator(strategy, cards).translate()
 
     def test_pullback_entry_in_uptrend(self, trend_pullback_ir):
         """Entry triggers when in uptrend AND price touches lower band."""
@@ -897,7 +897,7 @@ class TestBandExitSimulation:
                 updated_at="2024-01-01T00:00:00Z",
             ),
         }
-        return IRTranslator(strategy, cards).translate().ir
+        return IRTranslator(strategy, cards).translate()
 
     def test_exit_at_upper_band(self, band_exit_ir):
         """Exit triggers when price reaches upper band."""
@@ -1005,7 +1005,7 @@ class TestCompositeConditionSimulation:
                 updated_at="2024-01-01T00:00:00Z",
             ),
         }
-        return IRTranslator(strategy, cards).translate().ir
+        return IRTranslator(strategy, cards).translate()
 
     def test_allof_both_true(self, allof_ir):
         """Entry only when BOTH conditions are true."""
@@ -1098,7 +1098,7 @@ class TestCompositeConditionSimulation:
                 updated_at="2024-01-01T00:00:00Z",
             ),
         }
-        return IRTranslator(strategy, cards).translate().ir
+        return IRTranslator(strategy, cards).translate()
 
     def test_anyof_first_true(self, anyof_ir):
         """Entry when first condition is true (oversold < -5%)."""
@@ -1245,7 +1245,7 @@ class TestComplexMultiConditionStrategy:
                 updated_at="2024-01-01T00:00:00Z",
             ),
         }
-        return IRTranslator(strategy, cards).translate().ir
+        return IRTranslator(strategy, cards).translate()
 
     def test_full_trade_lifecycle(self, trend_pullback_band_strategy):
         """Test complete trade lifecycle: no entry → entry → hold → exit.
@@ -1482,7 +1482,7 @@ class TestComplexMultiConditionStrategy:
                 updated_at="2024-01-01T00:00:00Z",
             ),
         }
-        return IRTranslator(strategy, cards).translate().ir
+        return IRTranslator(strategy, cards).translate()
 
     def test_nested_anyof_allof_first_branch(self, triple_condition_strategy):
         """Test that first branch of anyOf(allOf(...), ...) triggers correctly."""
