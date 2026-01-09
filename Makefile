@@ -96,23 +96,14 @@ docker-build:
 			.'
 	@echo "✅ Build complete"
 
-# Build custom LEAN image with Pub/Sub support (loads GITHUB_TOKEN from .env or gh auth)
+# Build custom LEAN image from vibe-trade-lean repo
 docker-build-lean:
-	@echo "🏗️  Building LEAN image..."
+	@echo "🏗️  Building LEAN image from vibe-trade-lean..."
 	@echo "   Image: $(LEAN_IMAGE)"
-	@bash -c '\
-		if [ -f .env ]; then \
-			export $$(grep -v "^#" .env | xargs); \
-		fi; \
-		GITHUB_TOKEN=$${GITHUB_TOKEN:-$$(gh auth token 2>/dev/null || echo "")}; \
-		if [ -z "$$GITHUB_TOKEN" ]; then \
-			echo "⚠️  Warning: GITHUB_TOKEN not set. Add it to .env or run gh auth login"; \
-		fi; \
-		DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
-			--build-arg GITHUB_TOKEN="$$GITHUB_TOKEN" \
-			-f Dockerfile.lean \
-			-t $(LEAN_IMAGE) \
-			.'
+	@cd ../vibe-trade-lean && DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
+		-f Dockerfile \
+		-t $(LEAN_IMAGE) \
+		.
 	@echo "✅ Build complete"
 
 # Legacy target
@@ -148,10 +139,10 @@ deploy-lean: docker-build-push-lean
 
 # Build backtest service image (HTTP-based, for Cloud Run Service)
 docker-build-lean-service:
-	@echo "🏗️  Building backtest service image..."
+	@echo "🏗️  Building backtest service image from vibe-trade-lean..."
 	@echo "   Image: $(BACKTEST_SERVICE_IMAGE)"
-	@DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
-		-f Dockerfile.lean-service \
+	@cd ../vibe-trade-lean && DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
+		-f Dockerfile.service \
 		-t $(BACKTEST_SERVICE_IMAGE) \
 		.
 	@echo "✅ Build complete"
