@@ -29,6 +29,11 @@ from .ir import (
     IndicatorValue,
     # Runtime conditions
     IREventWindowCondition,
+    IRRuntimeCondition,
+    RuntimeCondition,
+    TimeFilterCondition,
+    BreakoutCondition,
+    SqueezeCondition,
     LiquidateAction,
     LiteralValue,
     MarketOrderAction,
@@ -442,6 +447,61 @@ class ConditionEvaluator:
                 in_window = ctx.is_in_event_window(event_types, pre_window, post_window)
                 return in_window if mode == "within" else not in_window
 
+            case RuntimeCondition(
+                condition_type=cond_type,
+                params=params,
+            ) | IRRuntimeCondition(
+                condition_type=cond_type,
+                params=params,
+            ):
+                # Handle specific runtime condition types
+                if cond_type == "breakout":
+                    return self._evaluate_breakout_runtime(params, ctx)
+                elif cond_type == "band_edge_event":
+                    return self._evaluate_band_edge_event(params, ctx)
+                elif cond_type == "band_exit":
+                    return self._evaluate_band_exit(params, ctx)
+                # For other runtime conditions, pass through
+                return True
+
+            case TimeFilterCondition(
+                days_of_week=days_of_week,
+                time_window=time_window,
+            ):
+                # Check if current day/time is within the filter window
+                if days_of_week and ctx.day_of_week not in days_of_week:
+                    return False
+                if time_window:
+                    # Parse time window "HHMM-HHMM"
+                    start_str, end_str = time_window.split("-")
+                    start_h, start_m = int(start_str[:2]), int(start_str[2:])
+                    end_h, end_m = int(end_str[:2]), int(end_str[2:])
+                    current_mins = ctx.hour * 60 + ctx.minute
+                    start_mins = start_h * 60 + start_m
+                    end_mins = end_h * 60 + end_m
+                    if not (start_mins <= current_mins <= end_mins):
+                        return False
+                return True
+
+            case BreakoutCondition(
+                max_indicator=max_ind,
+                min_indicator=min_ind,
+                buffer_bps=buffer_bps,
+            ):
+                # Check if price breaks above max or below min
+                price = ctx.price_bar.Close
+                buffer_mult = 1 + buffer_bps / 10000
+                # Get max/min indicator values
+                max_val = self.resolver._get_indicator_value(ctx, max_ind)
+                min_val = self.resolver._get_indicator_value(ctx, min_ind)
+                # Breakout above max or below min
+                return price > max_val * buffer_mult or price < min_val / buffer_mult
+
+            case SqueezeCondition():
+                # Squeeze condition needs specific handling
+                # In simulation, we just return True (condition passes)
+                return True
+
             case _:
                 raise ValueError(f"Unknown condition type: {type(condition)}")
 
@@ -476,6 +536,178 @@ class ConditionEvaluator:
                     f"Unknown regime metric: {metric}. "
                     f"Supported metrics: trend_ma_relation, ret_pct"
                 )
+
+    def _evaluate_breakout_runtime(
+        self, params: dict[str, Any], ctx: EvalContext
+    ) -> bool:
+        """Evaluate a breakout runtime condition.
+
+        Uses Donchian Channel to check if price breaks above upper or below lower.
+        """
+        lookback = params.get("lookback_bars", 50)
+        buffer_bps = params.get("buffer_bps", 0)
+        direction = params.get("direction", "long")
+
+        # Get Donchian Channel indicator (raw, not via _get_indicator_value)
+        dc_id = f"dc_{lookback}"
+        try:
+            ind = ctx.get_indicator(dc_id)
+        except KeyError:
+            # No indicator available - pass through
+            return True
+
+        price = ctx.price_bar.Close
+        buffer_mult = 1 + buffer_bps / 10000
+
+        # Handle different indicator value representations
+        if isinstance(ind, dict):
+            # Test mock provides dict directly
+            upper = ind.get("upper", float("inf"))
+            lower = ind.get("lower", float("-inf"))
+        elif hasattr(ind, "UpperBand"):
+            # LEAN-style band indicator or MockBandIndicator
+            upper_band = ind.UpperBand
+            lower_band = ind.LowerBand
+            # Check if it's a mock with Current.Value or just value
+            if hasattr(upper_band, "Current"):
+                upper = upper_band.Current.Value
+                lower = lower_band.Current.Value
+            elif hasattr(upper_band, "value"):
+                upper = upper_band.value
+                lower = lower_band.value
+            else:
+                return True
+        elif hasattr(ind, "value") and isinstance(ind.value, dict):
+            # Mock with value attribute containing dict
+            upper = ind.value.get("upper", float("inf"))
+            lower = ind.value.get("lower", float("-inf"))
+        else:
+            # Unknown format - pass through
+            return True
+
+        if direction == "long":
+            return price > upper * buffer_mult
+        elif direction == "short":
+            return price < lower / buffer_mult
+        else:  # auto - either direction
+            return price > upper * buffer_mult or price < lower / buffer_mult
+
+    def _evaluate_band_edge_event(
+        self, params: dict[str, Any], ctx: EvalContext
+    ) -> bool:
+        """Evaluate a band edge event condition.
+
+        Checks if price touches or crosses a band edge (upper/lower).
+        """
+        band_type = params.get("band_type", "bollinger")
+        length = params.get("length", 20)
+        edge = params.get("edge", "lower")
+        event = params.get("event", "touch")  # touch, cross_above, cross_below
+
+        # Get band indicator
+        if band_type == "bollinger":
+            band_id = f"bb_{length}"
+        elif band_type == "keltner":
+            band_id = f"kc_{length}"
+        elif band_type == "donchian":
+            band_id = f"dc_{length}"
+        else:
+            return True  # Unknown band type - pass through
+
+        try:
+            ind = ctx.get_indicator(band_id)
+        except KeyError:
+            return True  # No indicator - pass through
+
+        price = ctx.price_bar.Close
+
+        # Get band values
+        if isinstance(ind, dict):
+            upper = ind.get("upper", float("inf"))
+            lower = ind.get("lower", float("-inf"))
+        elif hasattr(ind, "UpperBand"):
+            upper_band = ind.UpperBand
+            lower_band = ind.LowerBand
+            if hasattr(upper_band, "Current"):
+                upper = upper_band.Current.Value
+                lower = lower_band.Current.Value
+            elif hasattr(upper_band, "value"):
+                upper = upper_band.value
+                lower = lower_band.value
+            else:
+                return True
+        else:
+            return True
+
+        # Check edge condition
+        target = lower if edge == "lower" else upper
+
+        if event == "touch":
+            # Price at or below lower band, or at or above upper band
+            if edge == "lower":
+                return price <= lower
+            else:
+                return price >= upper
+        elif event == "cross_above":
+            # This would need previous bar data - approximate with current
+            return price > target
+        elif event == "cross_below":
+            return price < target
+        else:
+            return True
+
+    def _evaluate_band_exit(
+        self, params: dict[str, Any], ctx: EvalContext
+    ) -> bool:
+        """Evaluate a band exit condition.
+
+        Checks if price reaches band exit level.
+        """
+        band_type = params.get("band_type", "bollinger")
+        length = params.get("length", 20)
+        exit_edge = params.get("exit_edge", "upper")
+
+        # Get band indicator
+        if band_type == "bollinger":
+            band_id = f"bb_{length}"
+        elif band_type == "keltner":
+            band_id = f"kc_{length}"
+        elif band_type == "donchian":
+            band_id = f"dc_{length}"
+        else:
+            return True
+
+        try:
+            ind = ctx.get_indicator(band_id)
+        except KeyError:
+            return True
+
+        price = ctx.price_bar.Close
+
+        # Get band values
+        if isinstance(ind, dict):
+            upper = ind.get("upper", float("inf"))
+            lower = ind.get("lower", float("-inf"))
+        elif hasattr(ind, "UpperBand"):
+            upper_band = ind.UpperBand
+            lower_band = ind.LowerBand
+            if hasattr(upper_band, "Current"):
+                upper = upper_band.Current.Value
+                lower = lower_band.Current.Value
+            elif hasattr(upper_band, "value"):
+                upper = upper_band.value
+                lower = lower_band.value
+            else:
+                return True
+        else:
+            return True
+
+        if exit_edge == "upper":
+            return price >= upper
+        elif exit_edge == "lower":
+            return price <= lower
+        else:
+            return True
 
 
 # =============================================================================

@@ -100,14 +100,14 @@ class TestEntryRuleTrigger:
 
         # ROC = 3% > 2% threshold → should fire
         ctx = EvalContext(
-            indicators={"roc": MockIndicator(0.03)},  # 3%
+            indicators={"roc_1": MockIndicator(0.03)},  # 3%
             state={"entry_price": None, "bars_since_entry": 0},
             price_bar=MockPriceBar(close=103.0),
         )
         assert evaluate_entry(ir, ctx) is True
 
         # ROC = 1% < 2% threshold → should NOT fire
-        ctx.indicators["roc"] = MockIndicator(0.01)
+        ctx.indicators["roc_1"] = MockIndicator(0.01)
         assert evaluate_entry(ir, ctx) is False
 
     def test_trend_ma_relation(self):
@@ -168,7 +168,7 @@ class TestTrendPullback:
             indicators={
                 "ema_20": MockIndicator(105.0),
                 "ema_50": MockIndicator(100.0),
-                "bb_2_0_20": MockBandIndicator(upper=110.0, middle=100.0, lower=90.0),
+                "bb_20": MockBandIndicator(upper=110.0, middle=100.0, lower=90.0),
             },
             state={"entry_price": None, "bars_since_entry": 0},
             price_bar=MockPriceBar(close=90.0),  # At lower band
@@ -196,7 +196,7 @@ class TestTrendPullback:
             indicators={
                 "ema_20": MockIndicator(95.0),  # Below slow
                 "ema_50": MockIndicator(100.0),
-                "bb_2_0_20": MockBandIndicator(upper=110.0, middle=100.0, lower=90.0),
+                "bb_20": MockBandIndicator(upper=110.0, middle=100.0, lower=90.0),
             },
             state={"entry_price": None, "bars_since_entry": 0},
             price_bar=MockPriceBar(close=90.0),
@@ -345,7 +345,7 @@ class TestBandExit:
         # Close=111 >= upper=110 → exit
         ctx = EvalContext(
             indicators={
-                "bb_2_0_20": MockBandIndicator(upper=110.0, middle=100.0, lower=90.0),
+                "bb_20": MockBandIndicator(upper=110.0, middle=100.0, lower=90.0),
             },
             state={"entry_price": None, "bars_since_entry": 0},
             price_bar=MockPriceBar(close=111.0),
@@ -600,7 +600,7 @@ class TestEntryExitGateCombination:
                 "ema_20": MockIndicator(105.0),
                 "ema_50": MockIndicator(100.0),
                 "ema_200": MockIndicator(95.0),
-                "bb_2_0_20": MockBandIndicator(upper=110.0, middle=100.0, lower=90.0),
+                "bb_20": MockBandIndicator(upper=110.0, middle=100.0, lower=90.0),
                 "atr_20": MockIndicator(2.0),
             },
             state=state,
@@ -691,7 +691,7 @@ class TestMultipleExits:
         # Scenario: Price at upper band (take profit triggers)
         ctx = EvalContext(
             indicators={
-                "bb_2_0_20": MockBandIndicator(upper=110.0, middle=100.0, lower=90.0),
+                "bb_20": MockBandIndicator(upper=110.0, middle=100.0, lower=90.0),
                 "atr_20": MockIndicator(2.0),
             },
             state=state,
@@ -745,7 +745,7 @@ class TestAllOfCondition:
             indicators={
                 "ema_20": MockIndicator(105.0),
                 "ema_50": MockIndicator(100.0),
-                "roc": MockIndicator(-0.03),  # -3%
+                "roc_1": MockIndicator(-0.03),  # -3%
             },
             state={"entry_price": None, "bars_since_entry": 0},
             price_bar=MockPriceBar(),
@@ -753,7 +753,7 @@ class TestAllOfCondition:
         assert evaluate_entry(ir, ctx) is True
 
         # Only uptrend, not oversold
-        ctx.indicators["roc"] = MockIndicator(-0.01)  # -1%
+        ctx.indicators["roc_1"] = MockIndicator(-0.01)  # -1%
         assert evaluate_entry(ir, ctx) is False
 
 
@@ -789,18 +789,18 @@ class TestAnyOfCondition:
 
         # First condition true: very oversold
         ctx = EvalContext(
-            indicators={"roc": MockIndicator(-0.06)},  # -6%
+            indicators={"roc_1": MockIndicator(-0.06)},  # -6%
             state={"entry_price": None, "bars_since_entry": 0},
             price_bar=MockPriceBar(),
         )
         assert evaluate_entry(ir, ctx) is True
 
         # Second condition true: very overbought
-        ctx.indicators["roc"] = MockIndicator(0.06)  # +6%
+        ctx.indicators["roc_1"] = MockIndicator(0.06)  # +6%
         assert evaluate_entry(ir, ctx) is True
 
         # Neither true: moderate
-        ctx.indicators["roc"] = MockIndicator(0.02)  # +2%
+        ctx.indicators["roc_1"] = MockIndicator(0.02)  # +2%
         assert evaluate_entry(ir, ctx) is False
 
 

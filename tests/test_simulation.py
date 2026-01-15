@@ -406,17 +406,17 @@ class TestReturnThresholdSimulation:
                 # Bar 0: ROC = -3% (above threshold, no entry)
                 BarData(
                     bar=MockBar(100, 101, 99, 100),
-                    indicators={"roc": -0.03},  # -3% as decimal
+                    indicators={"roc_14": -0.03},  # -3% as decimal
                 ),
                 # Bar 1: ROC = -5% (exactly at threshold, no entry - need <)
                 BarData(
                     bar=MockBar(100, 100, 95, 96),
-                    indicators={"roc": -0.05},  # -5% as decimal
+                    indicators={"roc_14": -0.05},  # -5% as decimal
                 ),
                 # Bar 2: ROC = -7% (below threshold, ENTRY!)
                 BarData(
                     bar=MockBar(96, 96, 92, 93),
-                    indicators={"roc": -0.07},  # -7% as decimal
+                    indicators={"roc_14": -0.07},  # -7% as decimal
                 ),
             ],
             expected_signals=[Signal(bar_index=2, signal_type="entry")],
@@ -431,10 +431,10 @@ class TestReturnThresholdSimulation:
             name="Above threshold",
             description="ROC stays above -5%",
             bars=[
-                BarData(bar=MockBar(100, 101, 99, 100), indicators={"roc": 0.02}),  # +2%
-                BarData(bar=MockBar(100, 102, 99, 101), indicators={"roc": 0.01}),  # +1%
-                BarData(bar=MockBar(101, 101, 98, 99), indicators={"roc": -0.02}),  # -2%
-                BarData(bar=MockBar(99, 100, 97, 98), indicators={"roc": -0.04}),  # -4%
+                BarData(bar=MockBar(100, 101, 99, 100), indicators={"roc_14": 0.02}),  # +2%
+                BarData(bar=MockBar(100, 102, 99, 101), indicators={"roc_14": 0.01}),  # +1%
+                BarData(bar=MockBar(101, 101, 98, 99), indicators={"roc_14": -0.02}),  # -2%
+                BarData(bar=MockBar(99, 100, 97, 98), indicators={"roc_14": -0.04}),  # -4%
             ],
             expected_signals=[],
         )
@@ -566,6 +566,7 @@ class TestTrendPullbackSimulation:
                 slots={
                     "event": {
                         "dip_band": {"band": "bollinger", "length": 20, "mult": 2.0},
+                        "dip": {"kind": "edge_event", "edge": "lower", "op": "touch"},
                         "trend_gate": {"fast": 20, "slow": 50, "op": ">"},
                     },
                     "action": {"direction": "long"},
@@ -589,7 +590,7 @@ class TestTrendPullbackSimulation:
                     indicators={
                         "ema_20": 102.0,
                         "ema_50": 100.0,
-                        "bb_2_0_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
+                        "bb_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
                     },
                 ),
                 # Bar 1: Uptrend + price at lower band (ENTRY!)
@@ -598,7 +599,7 @@ class TestTrendPullbackSimulation:
                     indicators={
                         "ema_20": 101.0,
                         "ema_50": 99.0,
-                        "bb_2_0_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
+                        "bb_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
                     },
                 ),
             ],
@@ -620,7 +621,7 @@ class TestTrendPullbackSimulation:
                     indicators={
                         "ema_20": 98.0,  # Below slow = downtrend
                         "ema_50": 100.0,
-                        "bb_2_0_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
+                        "bb_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
                     },
                 ),
             ],
@@ -642,7 +643,7 @@ class TestTrendPullbackSimulation:
                     indicators={
                         "ema_20": 102.0,
                         "ema_50": 100.0,
-                        "bb_2_0_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
+                        "bb_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
                     },
                 ),
             ],
@@ -722,7 +723,7 @@ class TestBandExitSimulation:
                     indicators={
                         "ema_20": 101.0,
                         "ema_50": 99.0,
-                        "bb_2_0_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
+                        "bb_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
                     },
                 ),
                 # Bar 1: Price rising, still below upper
@@ -731,7 +732,7 @@ class TestBandExitSimulation:
                     indicators={
                         "ema_20": 101.0,
                         "ema_50": 99.0,
-                        "bb_2_0_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
+                        "bb_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
                     },
                 ),
                 # Bar 2: Price at upper band (EXIT!)
@@ -740,7 +741,7 @@ class TestBandExitSimulation:
                     indicators={
                         "ema_20": 101.0,
                         "ema_50": 99.0,
-                        "bb_2_0_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
+                        "bb_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
                     },
                 ),
             ],
@@ -828,7 +829,7 @@ class TestCompositeConditionSimulation:
                     indicators={
                         "ema_20": 102.0,
                         "ema_50": 100.0,
-                        "roc": -0.01,
+                        "roc_5": -0.01,
                     },  # -1% as decimal
                 ),
                 # Bar 1: Only oversold (no entry) - downtrend
@@ -837,7 +838,7 @@ class TestCompositeConditionSimulation:
                     indicators={
                         "ema_20": 98.0,
                         "ema_50": 100.0,
-                        "roc": -0.03,
+                        "roc_5": -0.03,
                     },  # -3% as decimal
                 ),
                 # Bar 2: BOTH uptrend AND oversold (ENTRY!)
@@ -846,7 +847,7 @@ class TestCompositeConditionSimulation:
                     indicators={
                         "ema_20": 101.0,
                         "ema_50": 100.0,
-                        "roc": -0.03,
+                        "roc_5": -0.03,
                     },  # -3% as decimal
                 ),
             ],
@@ -916,7 +917,7 @@ class TestCompositeConditionSimulation:
             description="Oversold condition triggers entry",
             bars=[
                 BarData(
-                    bar=MockBar(100, 100, 92, 93), indicators={"roc": -0.07}
+                    bar=MockBar(100, 100, 92, 93), indicators={"roc_10": -0.07}
                 ),  # -7% < -5% (as decimal)
             ],
             expected_signals=[Signal(bar_index=0, signal_type="entry")],
@@ -931,7 +932,7 @@ class TestCompositeConditionSimulation:
             name="AnyOf second true",
             description="Overbought condition triggers entry",
             bars=[
-                BarData(bar=MockBar(100, 108, 100, 107), indicators={"roc": 7.0}),  # 7% > 5%
+                BarData(bar=MockBar(100, 108, 100, 107), indicators={"roc_10": 7.0}),  # 7% > 5%
             ],
             expected_signals=[Signal(bar_index=0, signal_type="entry")],
         )
@@ -945,9 +946,9 @@ class TestCompositeConditionSimulation:
             name="AnyOf neither true",
             description="ROC in normal range",
             bars=[
-                BarData(bar=MockBar(100, 102, 99, 101), indicators={"roc": 0.02}),  # +2% as decimal
+                BarData(bar=MockBar(100, 102, 99, 101), indicators={"roc_10": 0.02}),  # +2% as decimal
                 BarData(
-                    bar=MockBar(101, 103, 100, 102), indicators={"roc": -0.01}
+                    bar=MockBar(101, 103, 100, 102), indicators={"roc_10": -0.01}
                 ),  # -1% as decimal
             ],
             expected_signals=[],
@@ -1069,7 +1070,7 @@ class TestComplexMultiConditionStrategy:
         # BB: lower=90, middle=100, upper=110 (simplified)
         # ID format: band_{type}_{length}_{mult} with . replaced by _
         bb_bands = {"upper": 110.0, "middle": 100.0, "lower": 90.0}
-        bb_id = "bb_2_0_20"
+        bb_id = "bb_20"
 
         scenario = SimulationScenario(
             name="Full trade lifecycle",
@@ -1116,7 +1117,7 @@ class TestComplexMultiConditionStrategy:
         ir = trend_pullback_band_strategy
 
         bb_bands = {"upper": 110.0, "middle": 100.0, "lower": 90.0}
-        bb_id = "bb_2_0_20"
+        bb_id = "bb_20"
 
         scenario = SimulationScenario(
             name="Multiple trade cycles",
@@ -1164,7 +1165,7 @@ class TestComplexMultiConditionStrategy:
         ir = trend_pullback_band_strategy
 
         bb_bands = {"upper": 110.0, "middle": 100.0, "lower": 90.0}
-        bb_id = "bb_2_0_20"
+        bb_id = "bb_20"
 
         scenario = SimulationScenario(
             name="Exact boundary touch",
@@ -1195,7 +1196,7 @@ class TestComplexMultiConditionStrategy:
         ir = trend_pullback_band_strategy
 
         bb_bands = {"upper": 110.0, "middle": 100.0, "lower": 90.0}
-        bb_id = "bb_2_0_20"
+        bb_id = "bb_20"
 
         scenario = SimulationScenario(
             name="Near miss - no trigger",
@@ -1307,7 +1308,7 @@ class TestComplexMultiConditionStrategy:
                     indicators={
                         "ema_20": 102.0,  # > slow (uptrend but diff only 2)
                         "ema_50": 100.0,
-                        "roc": -0.06,  # < -5% (oversold) as decimal
+                        "roc_5": -0.06,  # < -5% (oversold) as decimal
                     },
                 ),
             ],
@@ -1331,7 +1332,7 @@ class TestComplexMultiConditionStrategy:
                     indicators={
                         "ema_20": 115.0,  # 15 above slow (> 10 threshold)
                         "ema_50": 100.0,
-                        "roc": 3.0,  # NOT oversold, but doesn't matter
+                        "roc_5": 3.0,  # NOT oversold, but doesn't matter
                     },
                 ),
             ],
@@ -1355,7 +1356,7 @@ class TestComplexMultiConditionStrategy:
                     indicators={
                         "ema_20": 102.0,  # diff = 2 (not > 10 for strong)
                         "ema_50": 100.0,
-                        "roc": -0.02,  # not < -5% (not oversold) as decimal
+                        "roc_5": -0.02,  # not < -5% (not oversold) as decimal
                     },
                 ),
             ],

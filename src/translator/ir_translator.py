@@ -762,12 +762,13 @@ class IRTranslator:
             # Return percentage - use ROC indicator
             # ROC returns decimal (0.05 = 5%), but schema uses percentage (-2.0 = -2%)
             lookback = regime.get("lookback_bars", 1)
-            self._add_indicator(RateOfChange(id="roc", period=lookback))
+            roc_id = f"roc_{lookback}"
+            self._add_indicator(RateOfChange(id=roc_id, period=lookback))
             # Multiply ROC by 100 to convert to percentage
             return CompareCondition(
                 left=ExpressionValue(
                     op="*",
-                    left=IndicatorValue(indicator_id="roc"),
+                    left=IndicatorValue(indicator_id=roc_id),
                     right=LiteralValue(value=100.0),
                 ),
                 op=op,

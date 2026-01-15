@@ -59,6 +59,8 @@ from vibe_trade_shared.models.ir import (  # noqa: F401
     TimeFilterCondition,
     # Runtime conditions
     IREventWindowCondition,
+    IRRuntimeCondition,
+    RuntimeCondition,
     # Actions
     Action,
     LiquidateAction,
