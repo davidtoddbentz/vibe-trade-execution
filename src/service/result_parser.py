@@ -6,7 +6,6 @@ from pathlib import Path
 
 from src.models.backtest_result import (
     BacktestResult,
-    ChartSeries,
     EquityPoint,
     Order,
     OrderDirection,

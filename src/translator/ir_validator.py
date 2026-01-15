@@ -18,6 +18,7 @@ from .ir import (
     IndicatorValue,
     NotCondition,
     RegimeCondition,
+    RollingWindowValue,
     StateValue,
     StrategyIR,
 )
@@ -71,6 +72,10 @@ class IRValidator:
         # Validate gates
         for i, gate in enumerate(self.ir.gates):
             self._validate_condition(gate.condition, f"gates[{i}].condition")
+
+        # Validate overlays
+        for i, overlay in enumerate(self.ir.overlays):
+            self._validate_condition(overlay.condition, f"overlays[{i}].condition")
 
         # Validate on_bar hooks
         for i, op in enumerate(self.ir.on_bar):
@@ -136,6 +141,13 @@ class IRValidator:
         elif isinstance(value, ExpressionValue):
             self._validate_value(value.left, f"{path}.left")
             self._validate_value(value.right, f"{path}.right")
+        elif isinstance(value, RollingWindowValue):
+            if value.indicator_id not in self.indicator_ids:
+                self.result.add_error(
+                    path,
+                    f"References undefined indicator '{value.indicator_id}'. "
+                    f"Defined indicators: {sorted(self.indicator_ids)}",
+                )
         # PriceValue, VolumeValue, TimeValue, LiteralValue don't reference entities
 
     def _validate_state_op(self, op, path: str) -> None:

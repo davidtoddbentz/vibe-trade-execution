@@ -35,10 +35,18 @@ class MockIndicator:
 class MockBandIndicator:
     """Mock for band indicators (BB, KC, Donchian)."""
 
-    def __init__(self, upper: float, middle: float, lower: float, is_ready: bool = True):
+    def __init__(
+        self,
+        upper: float,
+        middle: float,
+        lower: float,
+        std_dev: float = 0.0,
+        is_ready: bool = True,
+    ):
         self.UpperBand = MockIndicator(upper)
         self.MiddleBand = MockIndicator(middle)
         self.LowerBand = MockIndicator(lower)
+        self.StandardDeviation = MockIndicator(std_dev)
         self.IsReady = is_ready
 
 
@@ -157,7 +165,11 @@ class SimulationPriceBar:
 # =============================================================================
 
 
-def make_strategy(cards_dict: dict[str, dict]) -> tuple[Strategy, dict[str, Card]]:
+def make_strategy(
+    cards_dict: dict[str, dict],
+    name: str = "Test Strategy",
+    symbol: str = "BTC-USD",
+) -> tuple[Strategy, dict[str, Card]]:
     """Create a strategy with cards from a simplified dict specification.
 
     Args:
@@ -165,6 +177,8 @@ def make_strategy(cards_dict: dict[str, dict]) -> tuple[Strategy, dict[str, Card
             - type: Card type (e.g., "entry.rule_trigger")
             - slots: Card slots dict
             - name: Optional card name (defaults to card_id)
+        name: Strategy name (defaults to "Test Strategy")
+        symbol: Trading symbol (defaults to "BTC-USD")
 
     Returns:
         Tuple of (Strategy, dict of Cards)
@@ -197,10 +211,13 @@ def make_strategy(cards_dict: dict[str, dict]) -> tuple[Strategy, dict[str, Card
             updated_at="2024-01-01T00:00:00Z",
         )
 
+    # Generate strategy ID from name
+    strategy_id = f"test-{name.lower().replace(' ', '-')}" if name != "Test Strategy" else "test-strategy"
+
     strategy = Strategy(
-        id="test-strategy",
-        name="Test Strategy",
-        universe=["BTC-USD"],
+        id=strategy_id,
+        name=name,
+        universe=[symbol],
         attachments=attachments,
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
@@ -325,3 +342,104 @@ def ema_crossover_strategy() -> tuple[Strategy, dict[str, Card]]:
             },
         }
     )
+
+
+# =============================================================================
+# Simulation Helpers
+# =============================================================================
+
+
+def run_simulation(ir: "StrategyIR", scenario: SimulationScenario) -> list[Signal]:
+    """Run a strategy simulation and return actual signals.
+
+    Args:
+        ir: The translated strategy IR
+        scenario: SimulationScenario with bars and expected signals
+
+    Returns:
+        List of actual signals fired during simulation
+    """
+    from src.translator.evaluator import ConditionEvaluator, StateOperator
+
+    evaluator = ConditionEvaluator()
+    state_op = StateOperator()
+
+    # Initialize state
+    state = {sv.id: sv.default for sv in ir.state}
+    state.update(scenario.initial_state)
+
+    actual_signals = []
+    is_invested = False
+
+    for bar_idx, bar_data in enumerate(scenario.bars):
+        # Build indicator dict with proper mock objects
+        indicators = {}
+        for ind_id, value in bar_data.indicators.items():
+            if isinstance(value, (MockIndicator, MockBandIndicator)):
+                indicators[ind_id] = value
+            elif isinstance(value, dict):
+                # Band indicator as dict
+                indicators[ind_id] = MockBandIndicator(**value)
+            else:
+                # Simple value - wrap in MockIndicator
+                indicators[ind_id] = MockIndicator(value)
+
+        # Create evaluation context
+        ctx = EvalContext(
+            indicators=indicators,
+            state=state,
+            price_bar=SimulationPriceBar(bar_data.bar),
+            hour=bar_data.hour,
+            minute=bar_data.minute,
+            day_of_week=bar_data.day_of_week,
+        )
+
+        if not is_invested:
+            # Check entry
+            if ir.entry and evaluator.evaluate(ir.entry.condition, ctx):
+                actual_signals.append(Signal(bar_idx, "entry"))
+                is_invested = True
+
+                # Execute on_fill hooks
+                for op in ir.entry.on_fill:
+                    state_op.execute(op, ctx)
+        else:
+            # Check exits
+            for exit_rule in ir.exits:
+                if evaluator.evaluate(exit_rule.condition, ctx):
+                    actual_signals.append(Signal(bar_idx, "exit", exit_rule.id))
+                    is_invested = False
+                    break
+
+            # Update state on each invested bar
+            if is_invested:
+                for op in ir.on_bar_invested:
+                    state_op.execute(op, ctx)
+
+    return actual_signals
+
+
+def assert_signals_match(expected: list[Signal], actual: list[Signal], scenario_name: str) -> None:
+    """Assert that actual signals match expected signals.
+
+    Args:
+        expected: List of expected signals
+        actual: List of actual signals from simulation
+        scenario_name: Name for error messages
+    """
+    assert len(actual) == len(expected), (
+        f"[{scenario_name}] Expected {len(expected)} signals, got {len(actual)}.\n"
+        f"Expected: {expected}\n"
+        f"Actual: {actual}"
+    )
+
+    for exp, act in zip(expected, actual, strict=False):
+        assert exp.bar_index == act.bar_index, (
+            f"[{scenario_name}] Signal at wrong bar. "
+            f"Expected {exp.signal_type} at bar {exp.bar_index}, "
+            f"got {act.signal_type} at bar {act.bar_index}"
+        )
+        assert exp.signal_type == act.signal_type, (
+            f"[{scenario_name}] Wrong signal type at bar {exp.bar_index}. "
+            f"Expected {exp.signal_type}, got {act.signal_type}"
+        )

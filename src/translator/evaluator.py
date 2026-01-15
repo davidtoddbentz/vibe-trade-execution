@@ -27,14 +27,18 @@ from .ir import (
     IndicatorProperty,
     IndicatorPropertyValue,
     IndicatorValue,
+    # Runtime conditions
+    IREventWindowCondition,
     LiquidateAction,
     LiteralValue,
     MarketOrderAction,
     MaxStateOp,
+    MinStateOp,
     NotCondition,
     PriceField,
     PriceValue,
     RegimeCondition,
+    RollingWindowValue,
     SetHoldingsAction,
     SetStateFromConditionOp,
     SetStateOp,
@@ -95,6 +99,17 @@ class BollingerBandsProtocol(Protocol):
     def IsReady(self) -> bool: ...
 
 
+class RollingWindowProtocol(Protocol):
+    """Protocol for RollingWindow indicators that store historical values."""
+
+    @property
+    def IsReady(self) -> bool: ...
+
+    def __getitem__(self, index: int) -> Any:
+        """Access historical value by index (0 = most recent, 1 = previous bar, etc.)."""
+        ...
+
+
 class PriceBarProtocol(Protocol):
     """Protocol for LEAN price bar objects."""
 
@@ -130,6 +145,15 @@ class AlgorithmProtocol(Protocol):
 
 
 @dataclass
+class EventCalendarEntry:
+    """A single event in the calendar."""
+
+    event_type: str  # "earnings", "fomc", "holiday", etc.
+    bar_index: int  # Which bar this event occurs at
+    symbol: str | None = None  # Optional symbol filter
+
+
+@dataclass
 class EvalContext:
     """Context for evaluating conditions and resolving values.
 
@@ -144,6 +168,9 @@ class EvalContext:
     hour: int = 12  # Default to midday
     minute: int = 0
     day_of_week: int = 2  # Default to Wednesday (0=Mon, 6=Sun)
+    # Event calendar support (stub - injected for testing)
+    current_bar_index: int = 0  # Current position in bar sequence
+    event_calendar: list[EventCalendarEntry] | None = None  # Injected event calendar
 
     def get_indicator(self, indicator_id: str) -> IndicatorProtocol:
         """Get an indicator by ID."""
@@ -189,6 +216,38 @@ class EvalContext:
                 return float(self.day_of_week)
             case _:
                 return 0.0
+
+    def is_in_event_window(
+        self,
+        event_types: list[str],
+        pre_window_bars: int,
+        post_window_bars: int,
+    ) -> bool:
+        """Check if current bar is within window around any matching event.
+
+        Args:
+            event_types: Types of events to check (e.g., ["earnings", "fomc"])
+            pre_window_bars: Bars before event to include in window
+            post_window_bars: Bars after event to include in window
+
+        Returns:
+            True if within window of any matching event, False otherwise.
+        """
+        if self.event_calendar is None:
+            return False
+
+        for event in self.event_calendar:
+            if event.event_type not in event_types:
+                continue
+            # Check if current bar is within the window
+            bars_to_event = event.bar_index - self.current_bar_index
+            # Within window if: -pre_window_bars <= bars_to_event <= post_window_bars
+            # Negative bars_to_event means event is in the past (we're after it)
+            # Positive bars_to_event means event is in the future (we're before it)
+            if -post_window_bars <= bars_to_event <= pre_window_bars:
+                return True
+
+        return False
 
 
 # =============================================================================
@@ -262,6 +321,9 @@ class ValueResolver:
             case TimeValue(component=component):
                 return ctx.get_time(component)
 
+            case RollingWindowValue(indicator_id=ind_id, offset=offset):
+                return self._get_rolling_window_value(ctx, ind_id, offset)
+
             case _:
                 raise ValueError(f"Unknown value ref type: {type(ref)}")
 
@@ -319,6 +381,26 @@ class ValueResolver:
             case _:
                 raise ValueError(f"Unknown expression operator: {op}")
 
+    def _get_rolling_window_value(
+        self, ctx: EvalContext, indicator_id: str, offset: int
+    ) -> float:
+        """Get a historical value from a RollingWindow indicator.
+
+        Args:
+            ctx: Evaluation context
+            indicator_id: ID of the RollingWindow indicator
+            offset: How many bars back (1 = previous bar, 2 = 2 bars ago)
+
+        Returns:
+            The historical value at the specified offset
+        """
+        ind = ctx.get_indicator(indicator_id)
+        # RollingWindow uses 0-indexed access where 0 = most recent
+        # Our offset convention: 1 = previous bar, so we use offset directly
+        # Since the rolling window stores after the current bar update,
+        # offset=1 means index 1 (the value before the most recent)
+        return ind[offset].Value
+
 
 # =============================================================================
 # Condition Evaluator
@@ -351,6 +433,15 @@ class ConditionEvaluator:
             case RegimeCondition() as regime:
                 return self._evaluate_regime(regime, ctx)
 
+            case IREventWindowCondition(
+                event_types=event_types,
+                pre_window_bars=pre_window,
+                post_window_bars=post_window,
+                mode=mode,
+            ):
+                in_window = ctx.is_in_event_window(event_types, pre_window, post_window)
+                return in_window if mode == "within" else not in_window
+
             case _:
                 raise ValueError(f"Unknown condition type: {type(condition)}")
 
@@ -381,9 +472,10 @@ class ConditionEvaluator:
                 return op.apply(roc_val * 100, float(value))  # Convert to percentage
 
             case _:
-                # Unknown metric - log warning and return True
-                # In production, this should be more robust
-                return True
+                raise ValueError(
+                    f"Unknown regime metric: {metric}. "
+                    f"Supported metrics: trend_ma_relation, ret_pct"
+                )
 
 
 # =============================================================================
@@ -444,6 +536,12 @@ class StateOperator:
                 new_value = self.resolver.resolve(value_ref, ctx)
                 current = ctx.get_state(state_id)
                 if current is None or new_value > current:
+                    ctx.set_state(state_id, new_value)
+
+            case MinStateOp(state_id=state_id, value=value_ref):
+                new_value = self.resolver.resolve(value_ref, ctx)
+                current = ctx.get_state(state_id)
+                if current is None or new_value < current:
                     ctx.set_state(state_id, new_value)
 
             case SetStateFromConditionOp(state_id=state_id, condition=condition):

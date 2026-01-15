@@ -13,7 +13,6 @@ The legacy LEAN code generator (string-to-code) is deprecated.
 """
 
 import pytest
-
 from vibe_trade_shared.models import Card, Strategy
 from vibe_trade_shared.models.strategy import Attachment
 
@@ -374,8 +373,8 @@ class TestIRTranslatorEntryRuleTrigger:
         # Should have indicators for both conditions
         indicator_ids = [ind.id for ind in result.indicators]
         assert "roc" in indicator_ids  # For ret_pct
-        assert "ema_fast" in indicator_ids  # For trend_ma_relation
-        assert "ema_slow" in indicator_ids
+        assert "ema_10" in indicator_ids  # For trend_ma_relation (ma_fast=10)
+        assert "ema_30" in indicator_ids  # For trend_ma_relation (ma_slow=30)
 
 
 # =============================================================================
@@ -532,6 +531,7 @@ class TestIRTranslatorExits:
                         "exit_band": {"band": "bollinger", "length": 20, "mult": 2.0},
                         "exit_trigger": {"edge": "upper"},
                     },
+                    "action": {"mode": "close"},
                 },
                 schema_etag="test",
                 created_at="2024-01-01T00:00:00Z",
@@ -585,8 +585,10 @@ class TestIRTranslatorGates:
                     "context": {"symbol": "BTC-USD", "tf": "1h"},
                     "event": {
                         "condition": {
-                            "type": "regime",
-                            "regime": {"metric": "trend_adx", "op": ">", "value": 25},
+                            "metric": "trend_adx",
+                            "op": ">",
+                            "value": 25,
+                            "lookback_bars": 14,
                         }
                     },
                     "action": {"mode": "allow", "target_roles": ["entry"]},
@@ -705,7 +707,7 @@ class TestIRTranslatorEMACrossover:
         # Verify indicators - should be deduplicated
         emas = [ind for ind in result.indicators if isinstance(ind, EMA)]
         assert len(emas) == 2
-        assert {ema.id for ema in emas} == {"ema_fast", "ema_slow"}
+        assert {ema.id for ema in emas} == {"ema_20", "ema_50"}
         assert {ema.period for ema in emas} == {20, 50}
 
         # Verify entry
@@ -713,10 +715,10 @@ class TestIRTranslatorEMACrossover:
         entry_cond = result.entry.condition
         assert isinstance(entry_cond, CompareCondition)
         assert isinstance(entry_cond.left, IndicatorValue)
-        assert entry_cond.left.indicator_id == "ema_fast"
+        assert entry_cond.left.indicator_id == "ema_20"
         assert entry_cond.op == CompareOp.GT
         assert isinstance(entry_cond.right, IndicatorValue)
-        assert entry_cond.right.indicator_id == "ema_slow"
+        assert entry_cond.right.indicator_id == "ema_50"
 
         # Verify entry action
         assert isinstance(result.entry.action, SetHoldingsAction)

@@ -53,7 +53,6 @@ vibe-trade-execution/
 │   ├── translator/           # Schema → IR translation
 │   │   ├── ir.py             # IR dataclasses (conditions, actions, state)
 │   │   ├── ir_translator.py  # Schema JSON → StrategyIR conversion
-│   │   ├── archetype_expander.py  # Expands complex archetypes to primitives
 │   │   └── evaluator.py      # Python evaluator (for simulation tests)
 │   ├── lean_runner/          # LEAN Docker container management
 │   │   ├── engine.py         # Run backtests via Docker

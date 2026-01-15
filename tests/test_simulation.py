@@ -9,23 +9,16 @@ Each test scenario defines:
 - Expected entry/exit signals at specific bar indices
 """
 
-from dataclasses import dataclass, field
-from typing import Any
-
 import pytest
 from vibe_trade_shared.models import Card, Strategy
 from vibe_trade_shared.models.strategy import Attachment
 
-from src.translator.evaluator import ConditionEvaluator, EvalContext, StateOperator
 from src.translator.ir import (
-    # Conditions
     AllOfCondition,
     CompareCondition,
     CompareOp,
     Condition,
-    # Strategy components
     EntryRule,
-    # Values
     ExpressionValue,
     IndicatorProperty,
     IndicatorPropertyValue,
@@ -34,7 +27,6 @@ from src.translator.ir import (
     PriceField,
     PriceValue,
     Resolution,
-    # Actions
     SetHoldingsAction,
     StrategyIR,
     TimeValue,
@@ -42,207 +34,17 @@ from src.translator.ir import (
 )
 from src.translator.ir_translator import IRTranslator
 
-# =============================================================================
-# Test Infrastructure
-# =============================================================================
-
-
-@dataclass
-class MockBar:
-    """Mock price bar for simulation."""
-
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float = 1000.0  # Default volume
-
-
-@dataclass
-class MockIndicatorCurrent:
-    """Mock for indicator.Current."""
-
-    Value: float
-
-
-@dataclass
-class MockIndicator:
-    """Mock for a simple indicator."""
-
-    current_value: float
-    is_ready: bool = True
-
-    @property
-    def Current(self):
-        return MockIndicatorCurrent(self.current_value)
-
-    @property
-    def IsReady(self):
-        return self.is_ready
-
-
-@dataclass
-class MockBandIndicator:
-    """Mock for band indicators (BB, KC)."""
-
-    upper: float
-    middle: float
-    lower: float
-    is_ready: bool = True
-
-    @property
-    def UpperBand(self):
-        return MockIndicator(self.upper)
-
-    @property
-    def MiddleBand(self):
-        return MockIndicator(self.middle)
-
-    @property
-    def LowerBand(self):
-        return MockIndicator(self.lower)
-
-    @property
-    def IsReady(self):
-        return self.is_ready
-
-
-@dataclass
-class Signal:
-    """Expected signal at a specific bar."""
-
-    bar_index: int
-    signal_type: str  # "entry" or "exit"
-    reason: str = ""
-
-
-@dataclass
-class BarData:
-    """Bar data with indicator values for a single bar."""
-
-    bar: MockBar
-    indicators: dict[str, Any]  # indicator_id -> value or MockIndicator
-    hour: int = 12  # Default midday
-    minute: int = 0
-    day_of_week: int = 2  # Default Wednesday
-
-
-@dataclass
-class SimulationScenario:
-    """A complete test scenario."""
-
-    name: str
-    description: str
-    bars: list[BarData]
-    expected_signals: list[Signal]
-    initial_state: dict[str, Any] = field(default_factory=dict)
-
-
-class MockPriceBar:
-    """Adapter for MockBar to match PriceBarProtocol."""
-
-    def __init__(self, bar: MockBar):
-        self._bar = bar
-
-    @property
-    def Open(self):
-        return self._bar.open
-
-    @property
-    def High(self):
-        return self._bar.high
-
-    @property
-    def Low(self):
-        return self._bar.low
-
-    @property
-    def Close(self):
-        return self._bar.close
-
-    @property
-    def Volume(self):
-        return self._bar.volume
-
-
-def run_simulation(ir: StrategyIR, scenario: SimulationScenario) -> list[Signal]:
-    """Run a strategy simulation and return actual signals."""
-    evaluator = ConditionEvaluator()
-    state_op = StateOperator()
-
-    # Initialize state
-    state = {sv.id: sv.default for sv in ir.state}
-    state.update(scenario.initial_state)
-
-    actual_signals = []
-    is_invested = False
-
-    for bar_idx, bar_data in enumerate(scenario.bars):
-        # Build indicator dict with proper mock objects
-        indicators = {}
-        for ind_id, value in bar_data.indicators.items():
-            if isinstance(value, (MockIndicator, MockBandIndicator)):
-                indicators[ind_id] = value
-            elif isinstance(value, dict):
-                # Band indicator as dict
-                indicators[ind_id] = MockBandIndicator(**value)
-            else:
-                # Simple value
-                indicators[ind_id] = MockIndicator(value)
-
-        # Create evaluation context
-        ctx = EvalContext(
-            indicators=indicators,
-            state=state,
-            price_bar=MockPriceBar(bar_data.bar),
-            hour=bar_data.hour,
-            minute=bar_data.minute,
-            day_of_week=bar_data.day_of_week,
-        )
-
-        if not is_invested:
-            # Check entry
-            if ir.entry and evaluator.evaluate(ir.entry.condition, ctx):
-                actual_signals.append(Signal(bar_idx, "entry"))
-                is_invested = True
-
-                # Execute on_fill hooks
-                for op in ir.entry.on_fill:
-                    state_op.execute(op, ctx)
-        else:
-            # Check exits
-            for exit_rule in ir.exits:
-                if evaluator.evaluate(exit_rule.condition, ctx):
-                    actual_signals.append(Signal(bar_idx, "exit", exit_rule.id))
-                    is_invested = False
-                    break
-
-            # Update state on each invested bar
-            if is_invested:
-                for op in ir.on_bar_invested:
-                    state_op.execute(op, ctx)
-
-    return actual_signals
-
-
-def assert_signals_match(expected: list[Signal], actual: list[Signal], scenario_name: str):
-    """Assert that actual signals match expected signals."""
-    assert len(actual) == len(expected), (
-        f"[{scenario_name}] Expected {len(expected)} signals, got {len(actual)}.\n"
-        f"Expected: {expected}\n"
-        f"Actual: {actual}"
-    )
-
-    for exp, act in zip(expected, actual, strict=False):
-        assert exp.bar_index == act.bar_index, (
-            f"[{scenario_name}] Signal at wrong bar. "
-            f"Expected {exp.signal_type} at bar {exp.bar_index}, "
-            f"got {act.signal_type} at bar {act.bar_index}"
-        )
-        assert exp.signal_type == act.signal_type, (
-            f"[{scenario_name}] Wrong signal type at bar {exp.bar_index}. "
-            f"Expected {exp.signal_type}, got {act.signal_type}"
-        )
+# Import shared test infrastructure from conftest
+from tests.conftest import (
+    BarData,
+    MockBar,
+    MockBandIndicator,
+    MockIndicator,
+    Signal,
+    SimulationScenario,
+    assert_signals_match,
+    run_simulation,
+)
 
 
 # =============================================================================
@@ -325,22 +127,22 @@ class TestEmaCrossoverSimulation:
                 # Bar 0: Fast below slow (no entry)
                 BarData(
                     bar=MockBar(100, 101, 99, 100),
-                    indicators={"ema_fast": 98.0, "ema_slow": 100.0},
+                    indicators={"ema_20": 98.0, "ema_50": 100.0},
                 ),
                 # Bar 1: Fast equals slow (no entry, need >)
                 BarData(
                     bar=MockBar(100, 102, 99, 101),
-                    indicators={"ema_fast": 100.0, "ema_slow": 100.0},
+                    indicators={"ema_20": 100.0, "ema_50": 100.0},
                 ),
                 # Bar 2: Fast above slow (ENTRY!)
                 BarData(
                     bar=MockBar(101, 103, 100, 102),
-                    indicators={"ema_fast": 101.0, "ema_slow": 100.0},
+                    indicators={"ema_20": 101.0, "ema_50": 100.0},
                 ),
                 # Bar 3: Still above (no new entry, already invested)
                 BarData(
                     bar=MockBar(102, 104, 101, 103),
-                    indicators={"ema_fast": 102.0, "ema_slow": 100.5},
+                    indicators={"ema_20": 102.0, "ema_50": 100.5},
                 ),
             ],
             expected_signals=[Signal(bar_index=2, signal_type="entry")],
@@ -358,22 +160,22 @@ class TestEmaCrossoverSimulation:
                 # Bar 0: Entry condition met
                 BarData(
                     bar=MockBar(100, 101, 99, 100),
-                    indicators={"ema_fast": 102.0, "ema_slow": 100.0},
+                    indicators={"ema_20": 102.0, "ema_50": 100.0},
                 ),
                 # Bar 1: Still bullish
                 BarData(
                     bar=MockBar(100, 105, 99, 104),
-                    indicators={"ema_fast": 103.0, "ema_slow": 101.0},
+                    indicators={"ema_20": 103.0, "ema_50": 101.0},
                 ),
                 # Bar 2: Fast equals slow (no exit yet, need <)
                 BarData(
                     bar=MockBar(104, 105, 100, 101),
-                    indicators={"ema_fast": 101.0, "ema_slow": 101.0},
+                    indicators={"ema_20": 101.0, "ema_50": 101.0},
                 ),
                 # Bar 3: Fast below slow (EXIT!)
                 BarData(
                     bar=MockBar(101, 102, 98, 99),
-                    indicators={"ema_fast": 99.0, "ema_slow": 101.0},
+                    indicators={"ema_20": 99.0, "ema_50": 101.0},
                 ),
             ],
             expected_signals=[
@@ -393,11 +195,11 @@ class TestEmaCrossoverSimulation:
             bars=[
                 BarData(
                     bar=MockBar(100, 101, 99, 100),
-                    indicators={"ema_fast": 100.0, "ema_slow": 100.0},
+                    indicators={"ema_20": 100.0, "ema_50": 100.0},
                 ),
                 BarData(
                     bar=MockBar(100, 101, 99, 100),
-                    indicators={"ema_fast": 100.0, "ema_slow": 100.0},
+                    indicators={"ema_20": 100.0, "ema_50": 100.0},
                 ),
             ],
             expected_signals=[],
@@ -415,23 +217,23 @@ class TestEmaCrossoverSimulation:
                 # Cycle 1: Entry
                 BarData(
                     bar=MockBar(100, 101, 99, 100),
-                    indicators={"ema_fast": 102.0, "ema_slow": 100.0},
+                    indicators={"ema_20": 102.0, "ema_50": 100.0},
                 ),
                 # Cycle 1: Exit
                 BarData(
-                    bar=MockBar(100, 101, 98, 98), indicators={"ema_fast": 98.0, "ema_slow": 100.0}
+                    bar=MockBar(100, 101, 98, 98), indicators={"ema_20": 98.0, "ema_50": 100.0}
                 ),
                 # No signal (bearish, not invested)
                 BarData(
-                    bar=MockBar(98, 99, 97, 97), indicators={"ema_fast": 96.0, "ema_slow": 99.0}
+                    bar=MockBar(98, 99, 97, 97), indicators={"ema_20": 96.0, "ema_50": 99.0}
                 ),
                 # Cycle 2: Entry
                 BarData(
-                    bar=MockBar(97, 102, 97, 101), indicators={"ema_fast": 101.0, "ema_slow": 99.0}
+                    bar=MockBar(97, 102, 97, 101), indicators={"ema_20": 101.0, "ema_50": 99.0}
                 ),
                 # Cycle 2: Exit
                 BarData(
-                    bar=MockBar(101, 101, 95, 96), indicators={"ema_fast": 97.0, "ema_slow": 99.0}
+                    bar=MockBar(101, 101, 95, 96), indicators={"ema_20": 97.0, "ema_50": 99.0}
                 ),
             ],
             expected_signals=[
@@ -521,17 +323,17 @@ class TestEmaCrossoverShortSimulation:
                 # Bar 0: Fast above slow (no entry)
                 BarData(
                     bar=MockBar(100, 101, 99, 100),
-                    indicators={"ema_fast": 102.0, "ema_slow": 100.0},
+                    indicators={"ema_20": 102.0, "ema_50": 100.0},
                 ),
                 # Bar 1: Fast below slow (SHORT ENTRY!)
                 BarData(
                     bar=MockBar(100, 101, 98, 98),
-                    indicators={"ema_fast": 98.0, "ema_slow": 100.0},
+                    indicators={"ema_20": 98.0, "ema_50": 100.0},
                 ),
                 # Bar 2: Bullish crossover (EXIT!)
                 BarData(
                     bar=MockBar(98, 102, 98, 101),
-                    indicators={"ema_fast": 101.0, "ema_slow": 100.0},
+                    indicators={"ema_20": 101.0, "ema_50": 100.0},
                 ),
             ],
             expected_signals=[
@@ -680,6 +482,8 @@ class TestBreakoutSimulation:
 
     def test_breakout_above_highest(self, breakout_long_ir):
         """Entry triggers when price breaks above 20-bar high."""
+        # to_ir() uses Donchian Channel with upper/lower bands
+        dc_id = "dc_20"
         scenario = SimulationScenario(
             name="Breakout entry",
             description="Price breaks above 20-bar high",
@@ -687,17 +491,17 @@ class TestBreakoutSimulation:
                 # Bar 0: Below high
                 BarData(
                     bar=MockBar(100, 102, 99, 101),
-                    indicators={"highest": 105.0, "lowest": 95.0},
+                    indicators={dc_id: {"upper": 105.0, "middle": 100.0, "lower": 95.0}},
                 ),
                 # Bar 1: Just below high
                 BarData(
                     bar=MockBar(101, 104, 100, 103),
-                    indicators={"highest": 105.0, "lowest": 95.0},
+                    indicators={dc_id: {"upper": 105.0, "middle": 100.0, "lower": 95.0}},
                 ),
-                # Bar 2: Breakout! (close >= highest)
+                # Bar 2: Breakout! (close > upper)
                 BarData(
                     bar=MockBar(103, 107, 102, 106),
-                    indicators={"highest": 105.0, "lowest": 95.0},
+                    indicators={dc_id: {"upper": 105.0, "middle": 100.0, "lower": 95.0}},
                 ),
             ],
             expected_signals=[Signal(bar_index=2, signal_type="entry")],
@@ -708,18 +512,22 @@ class TestBreakoutSimulation:
 
     def test_no_breakout_when_below(self, breakout_long_ir):
         """No entry when price stays below 20-bar high."""
+        dc_id = "dc_20"
         scenario = SimulationScenario(
             name="No breakout",
             description="Price stays below 20-bar high",
             bars=[
                 BarData(
-                    bar=MockBar(100, 102, 99, 101), indicators={"highest": 110.0, "lowest": 95.0}
+                    bar=MockBar(100, 102, 99, 101),
+                    indicators={dc_id: {"upper": 110.0, "middle": 102.5, "lower": 95.0}},
                 ),
                 BarData(
-                    bar=MockBar(101, 104, 100, 103), indicators={"highest": 110.0, "lowest": 95.0}
+                    bar=MockBar(101, 104, 100, 103),
+                    indicators={dc_id: {"upper": 110.0, "middle": 102.5, "lower": 95.0}},
                 ),
                 BarData(
-                    bar=MockBar(103, 108, 102, 107), indicators={"highest": 110.0, "lowest": 95.0}
+                    bar=MockBar(103, 108, 102, 107),
+                    indicators={dc_id: {"upper": 110.0, "middle": 102.5, "lower": 95.0}},
                 ),
             ],
             expected_signals=[],
@@ -779,18 +587,18 @@ class TestTrendPullbackSimulation:
                 BarData(
                     bar=MockBar(100, 101, 99, 100),
                     indicators={
-                        "ema_fast": 102.0,
-                        "ema_slow": 100.0,
-                        "band_bollinger_20_2_0": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
+                        "ema_20": 102.0,
+                        "ema_50": 100.0,
+                        "bb_2_0_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
                     },
                 ),
                 # Bar 1: Uptrend + price at lower band (ENTRY!)
                 BarData(
                     bar=MockBar(100, 100, 94, 94),
                     indicators={
-                        "ema_fast": 101.0,
-                        "ema_slow": 99.0,
-                        "band_bollinger_20_2_0": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
+                        "ema_20": 101.0,
+                        "ema_50": 99.0,
+                        "bb_2_0_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
                     },
                 ),
             ],
@@ -810,9 +618,9 @@ class TestTrendPullbackSimulation:
                 BarData(
                     bar=MockBar(100, 100, 94, 94),
                     indicators={
-                        "ema_fast": 98.0,  # Below slow = downtrend
-                        "ema_slow": 100.0,
-                        "band_bollinger_20_2_0": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
+                        "ema_20": 98.0,  # Below slow = downtrend
+                        "ema_50": 100.0,
+                        "bb_2_0_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
                     },
                 ),
             ],
@@ -832,9 +640,9 @@ class TestTrendPullbackSimulation:
                 BarData(
                     bar=MockBar(100, 102, 99, 101),
                     indicators={
-                        "ema_fast": 102.0,
-                        "ema_slow": 100.0,
-                        "band_bollinger_20_2_0": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
+                        "ema_20": 102.0,
+                        "ema_50": 100.0,
+                        "bb_2_0_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
                     },
                 ),
             ],
@@ -891,6 +699,7 @@ class TestBandExitSimulation:
                         "exit_band": {"band": "bollinger", "length": 20, "mult": 2.0},
                         "exit_trigger": {"edge": "upper"},
                     },
+                    "action": {"mode": "close"},
                 },
                 schema_etag="test",
                 created_at="2024-01-01T00:00:00Z",
@@ -902,7 +711,7 @@ class TestBandExitSimulation:
     def test_exit_at_upper_band(self, band_exit_ir):
         """Exit triggers when price reaches upper band."""
         # Band indicator IDs use naming convention: band_{type}_{length}_{mult}
-        # e.g., band_bollinger_20_2_0 for bollinger length=20 mult=2.0
+        # e.g., bb_2_0_20 for bollinger length=20 mult=2.0
         scenario = SimulationScenario(
             name="Exit at upper band",
             description="Entry at lower band, exit at upper band",
@@ -911,27 +720,27 @@ class TestBandExitSimulation:
                 BarData(
                     bar=MockBar(100, 100, 94, 94),
                     indicators={
-                        "ema_fast": 101.0,
-                        "ema_slow": 99.0,
-                        "band_bollinger_20_2_0": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
+                        "ema_20": 101.0,
+                        "ema_50": 99.0,
+                        "bb_2_0_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
                     },
                 ),
                 # Bar 1: Price rising, still below upper
                 BarData(
                     bar=MockBar(94, 100, 94, 99),
                     indicators={
-                        "ema_fast": 101.0,
-                        "ema_slow": 99.0,
-                        "band_bollinger_20_2_0": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
+                        "ema_20": 101.0,
+                        "ema_50": 99.0,
+                        "bb_2_0_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
                     },
                 ),
                 # Bar 2: Price at upper band (EXIT!)
                 BarData(
                     bar=MockBar(99, 106, 99, 105),
                     indicators={
-                        "ema_fast": 101.0,
-                        "ema_slow": 99.0,
-                        "band_bollinger_20_2_0": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
+                        "ema_20": 101.0,
+                        "ema_50": 99.0,
+                        "bb_2_0_20": {"upper": 105.0, "middle": 100.0, "lower": 95.0},
                     },
                 ),
             ],
@@ -1017,8 +826,8 @@ class TestCompositeConditionSimulation:
                 BarData(
                     bar=MockBar(100, 101, 99, 100),
                     indicators={
-                        "ema_fast": 102.0,
-                        "ema_slow": 100.0,
+                        "ema_20": 102.0,
+                        "ema_50": 100.0,
                         "roc": -0.01,
                     },  # -1% as decimal
                 ),
@@ -1026,8 +835,8 @@ class TestCompositeConditionSimulation:
                 BarData(
                     bar=MockBar(100, 100, 96, 97),
                     indicators={
-                        "ema_fast": 98.0,
-                        "ema_slow": 100.0,
+                        "ema_20": 98.0,
+                        "ema_50": 100.0,
                         "roc": -0.03,
                     },  # -3% as decimal
                 ),
@@ -1035,8 +844,8 @@ class TestCompositeConditionSimulation:
                 BarData(
                     bar=MockBar(97, 98, 95, 96),
                     indicators={
-                        "ema_fast": 101.0,
-                        "ema_slow": 100.0,
+                        "ema_20": 101.0,
+                        "ema_50": 100.0,
                         "roc": -0.03,
                     },  # -3% as decimal
                 ),
@@ -1260,7 +1069,7 @@ class TestComplexMultiConditionStrategy:
         # BB: lower=90, middle=100, upper=110 (simplified)
         # ID format: band_{type}_{length}_{mult} with . replaced by _
         bb_bands = {"upper": 110.0, "middle": 100.0, "lower": 90.0}
-        bb_id = "band_bollinger_20_2_0"
+        bb_id = "bb_2_0_20"
 
         scenario = SimulationScenario(
             name="Full trade lifecycle",
@@ -1270,27 +1079,27 @@ class TestComplexMultiConditionStrategy:
                 # Touch uses CLOSE price, not LOW
                 BarData(
                     bar=MockBar(95, 96, 85, 88),  # Close=88 <= lower band=90, but downtrend
-                    indicators={"ema_fast": 98.0, "ema_slow": 100.0, bb_id: bb_bands},
+                    indicators={"ema_20": 98.0, "ema_50": 100.0, bb_id: bb_bands},
                 ),
                 # Bar 1: Uptrend but CLOSE above band → NO ENTRY
                 BarData(
                     bar=MockBar(100, 105, 98, 103),  # Close=103 > lower band=90
-                    indicators={"ema_fast": 102.0, "ema_slow": 100.0, bb_id: bb_bands},
+                    indicators={"ema_20": 102.0, "ema_50": 100.0, bb_id: bb_bands},
                 ),
                 # Bar 2: Uptrend + CLOSE at band → ENTRY!
                 BarData(
                     bar=MockBar(95, 96, 85, 89),  # Close=89 <= lower band=90
-                    indicators={"ema_fast": 103.0, "ema_slow": 100.0, bb_id: bb_bands},
+                    indicators={"ema_20": 103.0, "ema_50": 100.0, bb_id: bb_bands},
                 ),
                 # Bar 3: Still invested, price rising
                 BarData(
                     bar=MockBar(89, 102, 88, 100),  # Close=100, no exit yet
-                    indicators={"ema_fast": 104.0, "ema_slow": 100.5, bb_id: bb_bands},
+                    indicators={"ema_20": 104.0, "ema_50": 100.5, bb_id: bb_bands},
                 ),
                 # Bar 4: CLOSE at upper band → EXIT!
                 BarData(
                     bar=MockBar(100, 115, 99, 112),  # Close=112 >= upper band=110
-                    indicators={"ema_fast": 105.0, "ema_slow": 101.0, bb_id: bb_bands},
+                    indicators={"ema_20": 105.0, "ema_50": 101.0, bb_id: bb_bands},
                 ),
             ],
             expected_signals=[
@@ -1307,7 +1116,7 @@ class TestComplexMultiConditionStrategy:
         ir = trend_pullback_band_strategy
 
         bb_bands = {"upper": 110.0, "middle": 100.0, "lower": 90.0}
-        bb_id = "band_bollinger_20_2_0"
+        bb_id = "bb_2_0_20"
 
         scenario = SimulationScenario(
             name="Multiple trade cycles",
@@ -1316,27 +1125,27 @@ class TestComplexMultiConditionStrategy:
                 # Cycle 1: Entry (CLOSE <= lower band in uptrend)
                 BarData(
                     bar=MockBar(100, 101, 85, 88),  # Close=88 <= lower=90
-                    indicators={"ema_fast": 103.0, "ema_slow": 100.0, bb_id: bb_bands},
+                    indicators={"ema_20": 103.0, "ema_50": 100.0, bb_id: bb_bands},
                 ),
                 # Cycle 1: Exit (CLOSE >= upper band)
                 BarData(
                     bar=MockBar(88, 115, 87, 112),  # Close=112 >= upper=110
-                    indicators={"ema_fast": 105.0, "ema_slow": 101.0, bb_id: bb_bands},
+                    indicators={"ema_20": 105.0, "ema_50": 101.0, bb_id: bb_bands},
                 ),
                 # Pause bar (no signal)
                 BarData(
                     bar=MockBar(112, 113, 100, 102),  # Close=102, between bands
-                    indicators={"ema_fast": 104.0, "ema_slow": 101.5, bb_id: bb_bands},
+                    indicators={"ema_20": 104.0, "ema_50": 101.5, bb_id: bb_bands},
                 ),
                 # Cycle 2: Entry (CLOSE <= lower band in uptrend)
                 BarData(
                     bar=MockBar(102, 103, 80, 85),  # Close=85 <= lower=90
-                    indicators={"ema_fast": 102.0, "ema_slow": 100.0, bb_id: bb_bands},
+                    indicators={"ema_20": 102.0, "ema_50": 100.0, bb_id: bb_bands},
                 ),
                 # Cycle 2: Exit (CLOSE >= upper band)
                 BarData(
                     bar=MockBar(85, 120, 84, 115),  # Close=115 >= upper=110
-                    indicators={"ema_fast": 106.0, "ema_slow": 102.0, bb_id: bb_bands},
+                    indicators={"ema_20": 106.0, "ema_50": 102.0, bb_id: bb_bands},
                 ),
             ],
             expected_signals=[
@@ -1355,7 +1164,7 @@ class TestComplexMultiConditionStrategy:
         ir = trend_pullback_band_strategy
 
         bb_bands = {"upper": 110.0, "middle": 100.0, "lower": 90.0}
-        bb_id = "band_bollinger_20_2_0"
+        bb_id = "bb_2_0_20"
 
         scenario = SimulationScenario(
             name="Exact boundary touch",
@@ -1364,12 +1173,12 @@ class TestComplexMultiConditionStrategy:
                 # CLOSE exactly at lower band (should trigger entry)
                 BarData(
                     bar=MockBar(95, 96, 88, 90.0),  # Close exactly 90 = lower band
-                    indicators={"ema_fast": 102.0, "ema_slow": 100.0, bb_id: bb_bands},
+                    indicators={"ema_20": 102.0, "ema_50": 100.0, bb_id: bb_bands},
                 ),
                 # CLOSE exactly at upper band (should trigger exit)
                 BarData(
                     bar=MockBar(90, 115, 89, 110.0),  # Close exactly 110 = upper band
-                    indicators={"ema_fast": 103.0, "ema_slow": 100.0, bb_id: bb_bands},
+                    indicators={"ema_20": 103.0, "ema_50": 100.0, bb_id: bb_bands},
                 ),
             ],
             expected_signals=[
@@ -1386,7 +1195,7 @@ class TestComplexMultiConditionStrategy:
         ir = trend_pullback_band_strategy
 
         bb_bands = {"upper": 110.0, "middle": 100.0, "lower": 90.0}
-        bb_id = "band_bollinger_20_2_0"
+        bb_id = "bb_2_0_20"
 
         scenario = SimulationScenario(
             name="Near miss - no trigger",
@@ -1395,12 +1204,12 @@ class TestComplexMultiConditionStrategy:
                 # CLOSE just ABOVE lower band (should NOT trigger)
                 BarData(
                     bar=MockBar(95, 96, 85, 90.01),  # Close=90.01 > lower band=90
-                    indicators={"ema_fast": 102.0, "ema_slow": 100.0, bb_id: bb_bands},
+                    indicators={"ema_20": 102.0, "ema_50": 100.0, bb_id: bb_bands},
                 ),
                 # More bars without entry
                 BarData(
                     bar=MockBar(90, 95, 88, 94),  # Close=94 > lower band=90
-                    indicators={"ema_fast": 101.5, "ema_slow": 100.0, bb_id: bb_bands},
+                    indicators={"ema_20": 101.5, "ema_50": 100.0, bb_id: bb_bands},
                 ),
             ],
             expected_signals=[],
@@ -1496,8 +1305,8 @@ class TestComplexMultiConditionStrategy:
                 BarData(
                     bar=MockBar(100, 101, 92, 93),
                     indicators={
-                        "ema_fast": 102.0,  # > slow (uptrend but diff only 2)
-                        "ema_slow": 100.0,
+                        "ema_20": 102.0,  # > slow (uptrend but diff only 2)
+                        "ema_50": 100.0,
                         "roc": -0.06,  # < -5% (oversold) as decimal
                     },
                 ),
@@ -1520,8 +1329,8 @@ class TestComplexMultiConditionStrategy:
                 BarData(
                     bar=MockBar(100, 105, 99, 104),
                     indicators={
-                        "ema_fast": 115.0,  # 15 above slow (> 10 threshold)
-                        "ema_slow": 100.0,
+                        "ema_20": 115.0,  # 15 above slow (> 10 threshold)
+                        "ema_50": 100.0,
                         "roc": 3.0,  # NOT oversold, but doesn't matter
                     },
                 ),
@@ -1544,8 +1353,8 @@ class TestComplexMultiConditionStrategy:
                 BarData(
                     bar=MockBar(100, 102, 99, 101),
                     indicators={
-                        "ema_fast": 102.0,  # diff = 2 (not > 10 for strong)
-                        "ema_slow": 100.0,
+                        "ema_20": 102.0,  # diff = 2 (not > 10 for strong)
+                        "ema_50": 100.0,
                         "roc": -0.02,  # not < -5% (not oversold) as decimal
                     },
                 ),

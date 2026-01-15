@@ -1,13 +1,20 @@
 """Intermediate Representation (IR) for strategy translation.
 
-This module defines the typed IR that sits between MCP card schemas and LEAN runtime.
-Uses Pydantic for serialization and discriminated unions for polymorphism.
+This module re-exports IR types from the shared library (single source of truth)
+and defines only execution-specific types locally.
 
-The IR is:
-- Fully typed (no magic strings, no dict access)
-- Serializable to/from JSON
-- Self-evaluating (conditions know how to evaluate themselves)
-- Self-executing (actions know how to execute themselves)
+From shared library:
+- All enums (CompareOp, PriceField, BandField, StateType, IndicatorProperty)
+- All value references (IndicatorValue, PriceValue, StateValue, etc.)
+- All conditions (CompareCondition, AllOfCondition, RegimeCondition, etc.)
+- All actions (SetHoldingsAction, LiquidateAction, MarketOrderAction)
+- All state operations (SetStateOp, IncrementStateOp, etc.)
+- All rules (EntryRule, ExitRule, Gate, Overlay)
+- StrategyIR
+
+Defined locally (LEAN-specific):
+- Resolution enum (LEAN timeframe)
+- Indicator types (EMA, SMA, BollingerBands, etc.) - discriminated union for LEAN runtime
 """
 
 from __future__ import annotations
@@ -18,79 +25,81 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field
 
 # =============================================================================
-# Enums
+# Re-export everything from shared library
+# =============================================================================
+
+from vibe_trade_shared.models.ir import (  # noqa: F401
+    # Enums
+    BandField,
+    CompareOp,
+    IndicatorProperty,
+    PriceField,
+    StateType,
+    # Value references
+    ExpressionValue,
+    IndicatorBandValue,
+    IndicatorPropertyValue,
+    IndicatorValue,
+    LiteralValue,
+    PriceValue,
+    RollingWindowValue,
+    StateValue,
+    TimeValue,
+    ValueRef,
+    VolumeValue,
+    # Conditions
+    AllOfCondition,
+    AnyOfCondition,
+    BreakoutCondition,
+    CompareCondition,
+    Condition,
+    NotCondition,
+    RegimeCondition,
+    SqueezeCondition,
+    TimeFilterCondition,
+    # Runtime conditions
+    IREventWindowCondition,
+    # Actions
+    Action,
+    LiquidateAction,
+    MarketOrderAction,
+    SetHoldingsAction,
+    # State operations
+    IncrementStateOp,
+    MaxStateOp,
+    MinStateOp,
+    SetStateFromConditionOp,
+    SetStateOp,
+    StateOp,
+    # Rules
+    EntryRule,
+    ExitRule,
+    Gate,
+    Overlay,
+    # State variables
+    StateVar,
+    # Strategy IR (uses IndicatorSpec, we'll override indicators field)
+    StrategyIR as SharedStrategyIR,
+)
+
+
+# =============================================================================
+# LEAN-specific: Resolution Enum
 # =============================================================================
 
 
 class Resolution(str, Enum):
-    """Trading resolution/timeframe."""
+    """Trading resolution/timeframe for LEAN."""
 
     MINUTE = "Minute"
     HOUR = "Hour"
     DAILY = "Daily"
 
 
-class CompareOp(str, Enum):
-    """Comparison operators."""
-
-    LT = "<"
-    LTE = "<="
-    GT = ">"
-    GTE = ">="
-    EQ = "=="
-    NEQ = "!="
-
-    def apply(self, left: float, right: float) -> bool:
-        """Apply the comparison operator."""
-        match self:
-            case CompareOp.LT:
-                return left < right
-            case CompareOp.LTE:
-                return left <= right
-            case CompareOp.GT:
-                return left > right
-            case CompareOp.GTE:
-                return left >= right
-            case CompareOp.EQ:
-                return left == right
-            case CompareOp.NEQ:
-                return left != right
-
-
-class PriceField(str, Enum):
-    """Price bar fields."""
-
-    OPEN = "open"
-    HIGH = "high"
-    LOW = "low"
-    CLOSE = "close"
-
-
-class BandField(str, Enum):
-    """Band indicator fields (for BB, KC, etc.)."""
-
-    UPPER = "upper"
-    MIDDLE = "middle"
-    LOWER = "lower"
-
-
-class IndicatorProperty(str, Enum):
-    """Indicator properties beyond the main value."""
-
-    STANDARD_DEVIATION = "StandardDeviation"
-    BAND_WIDTH = "BandWidth"
-
-
-class StateType(str, Enum):
-    """State variable types."""
-
-    FLOAT = "float"
-    INT = "int"
-    BOOL = "bool"
-
-
 # =============================================================================
-# Indicators
+# LEAN-specific: Indicator Types
+# These are discriminated union types for the LEAN runtime, which expects
+# specific indicator configurations rather than generic IndicatorSpec.
 # =============================================================================
 
 
@@ -158,6 +167,7 @@ class RateOfChange(BaseModel):
     type: Literal["ROC"] = "ROC"
     id: str
     period: int
+    symbol: str | None = None  # If set, use this symbol's data (for intermarket)
 
 
 class ADX(BaseModel):
@@ -182,6 +192,20 @@ class VWAP(BaseModel):
     type: Literal["VWAP"] = "VWAP"
     id: str
     period: int = 0  # 0 = intraday (resets daily), >0 = rolling period
+
+
+class VWAPBands(BaseModel):
+    """VWAP with standard deviation bands.
+
+    Provides upper/middle/lower bands similar to Bollinger Bands,
+    but centered on VWAP instead of SMA.
+    """
+
+    type: Literal["VWAP_BANDS"] = "VWAP_BANDS"
+    id: str
+    anchor: Literal["session", "week", "month", "ytd", "custom"] = "session"
+    multiplier: float = 2.0
+    anchor_datetime: str | None = None  # ISO format datetime for custom anchor
 
 
 class RollingWindow(BaseModel):
@@ -211,6 +235,69 @@ class RollingMinMax(BaseModel):
     field: PriceField = PriceField.CLOSE
 
 
+class SessionHighLow(BaseModel):
+    """Session high/low tracker.
+
+    Tracks the highest high or lowest low within a trading session.
+    Resets at session open.
+    """
+
+    type: Literal["SESSION_HL"] = "SESSION_HL"
+    id: str
+    mode: Literal["high", "low"]
+    session: str = "us_equity"  # Session identifier for reset timing
+
+
+class AnchoredVWAP(BaseModel):
+    """Anchored VWAP indicator.
+
+    Calculates VWAP anchored to a specific point in time (session open, week start,
+    custom datetime, etc.) along with standard deviation bands.
+
+    Fields:
+        - value: The VWAP value
+        - std_dev: Standard deviation from VWAP
+    """
+
+    type: Literal["AVWAP"] = "AVWAP"
+    id: str
+    anchor: Literal["session", "session_open", "week", "week_open", "month", "month_start", "ytd", "custom"] = "session"
+    anchor_datetime: str | None = None  # ISO format datetime for custom anchor
+
+
+class Percentile(BaseModel):
+    """Rolling percentile rank indicator.
+
+    Calculates where the current value of a metric falls within its historical distribution.
+    Used for squeeze detection (BB width percentile), volume percentile, etc.
+
+    Fields:
+        - value: The percentile rank (0-100)
+    """
+
+    type: Literal["PCTILE"] = "PCTILE"
+    id: str
+    period: int = 100  # Lookback period for percentile calculation
+    percentile: float = 10.0  # Target percentile level
+    source: str = "close"  # Source field for percentile calculation (close, bb_width, volume, etc.)
+
+
+class Gap(BaseModel):
+    """Gap detection indicator.
+
+    Tracks the gap between previous session close and current session open.
+    Used for gap trading strategies (gap_fade, gap_go).
+
+    Fields:
+        - gap_pct: Gap percentage (open - prev_close) / prev_close * 100
+        - direction: Gap direction ('up' or 'down')
+    """
+
+    type: Literal["GAP"] = "GAP"
+    id: str
+    session: str = "us"  # Session for gap calculation
+
+
 # Discriminated union of all indicator types
 Indicator = Annotated[
     EMA
@@ -224,345 +311,28 @@ Indicator = Annotated[
     | ADX
     | DonchianChannel
     | VWAP
+    | VWAPBands
     | RollingWindow
     | VolumeSMA
-    | RollingMinMax,
+    | RollingMinMax
+    | SessionHighLow
+    | AnchoredVWAP
+    | Percentile
+    | Gap,
     Field(discriminator="type"),
 ]
 
 
 # =============================================================================
-# Value References (things that resolve to a float)
-# =============================================================================
-
-
-class IndicatorValue(BaseModel):
-    """Reference to an indicator's current value."""
-
-    type: Literal["indicator"] = "indicator"
-    indicator_id: str
-
-
-class IndicatorBandValue(BaseModel):
-    """Reference to a band indicator's specific band (upper/middle/lower)."""
-
-    type: Literal["indicator_band"] = "indicator_band"
-    indicator_id: str
-    band: BandField
-
-
-class IndicatorPropertyValue(BaseModel):
-    """Reference to an indicator's property (e.g., StandardDeviation, BandWidth)."""
-
-    type: Literal["indicator_property"] = "indicator_property"
-    indicator_id: str
-    property: IndicatorProperty
-
-
-class PriceValue(BaseModel):
-    """Reference to current price bar field."""
-
-    type: Literal["price"] = "price"
-    field: PriceField = PriceField.CLOSE
-
-
-class VolumeValue(BaseModel):
-    """Reference to current bar's volume."""
-
-    type: Literal["volume"] = "volume"
-
-
-class TimeValue(BaseModel):
-    """Reference to current bar's time component."""
-
-    type: Literal["time"] = "time"
-    component: Literal["hour", "minute", "day_of_week"]
-
-
-class StateValue(BaseModel):
-    """Reference to a state variable."""
-
-    type: Literal["state"] = "state"
-    state_id: str
-
-
-class LiteralValue(BaseModel):
-    """A literal numeric value."""
-
-    type: Literal["literal"] = "literal"
-    value: float
-
-
-class ExpressionValue(BaseModel):
-    """A computed expression (left op right)."""
-
-    type: Literal["expr"] = "expr"
-    op: Literal["+", "-", "*", "/"]
-    left: ValueRef
-    right: ValueRef
-
-
-# Discriminated union of all value reference types
-ValueRef = Annotated[
-    IndicatorValue
-    | IndicatorBandValue
-    | IndicatorPropertyValue
-    | PriceValue
-    | VolumeValue
-    | TimeValue
-    | StateValue
-    | LiteralValue
-    | ExpressionValue,
-    Field(discriminator="type"),
-]
-
-# Update forward refs for ExpressionValue
-ExpressionValue.model_rebuild()
-
-
-# =============================================================================
-# Conditions (things that evaluate to bool)
-# =============================================================================
-
-
-class CompareCondition(BaseModel):
-    """Compare two values."""
-
-    type: Literal["compare"] = "compare"
-    left: ValueRef
-    op: CompareOp
-    right: ValueRef
-
-
-class AllOfCondition(BaseModel):
-    """All conditions must be true (AND)."""
-
-    type: Literal["allOf"] = "allOf"
-    conditions: list[Condition]
-
-
-class AnyOfCondition(BaseModel):
-    """Any condition must be true (OR)."""
-
-    type: Literal["anyOf"] = "anyOf"
-    conditions: list[Condition]
-
-
-class NotCondition(BaseModel):
-    """Negate a condition."""
-
-    type: Literal["not"] = "not"
-    condition: Condition
-
-
-class RegimeCondition(BaseModel):
-    """A regime-based condition (maps to ConditionSpec.regime from MCP schema).
-
-    This is a higher-level condition that the evaluator expands based on metric type.
-    """
-
-    type: Literal["regime"] = "regime"
-    metric: str  # e.g., "trend_ma_relation", "ret_pct", "vol_regime"
-    op: CompareOp
-    value: float | str
-    # Metric-specific params
-    ma_fast: int | None = None
-    ma_slow: int | None = None
-    lookback_bars: int | None = None
-
-
-class BreakoutCondition(BaseModel):
-    """Breakout condition - price breaks above N-bar high or below N-bar low.
-
-    Evaluator checks direction and compares price to max/min indicator.
-    """
-
-    type: Literal["breakout"] = "breakout"
-    lookback_bars: int = 50
-    buffer_bps: int = 0
-    max_indicator: str  # ID of MAX indicator
-    min_indicator: str  # ID of MIN indicator
-
-
-class SqueezeCondition(BaseModel):
-    """Squeeze condition - volatility compression followed by expansion.
-
-    Evaluator checks if BB width percentile is below threshold.
-    """
-
-    type: Literal["squeeze"] = "squeeze"
-    squeeze_metric: str = "bb_width_pctile"  # Metric for compression detection
-    pctile_threshold: float = 10.0  # Compression percentile threshold
-    break_rule: str = "donchian"  # How to detect breakout
-    with_trend: bool = False  # Whether to require trend alignment
-
-
-class TimeFilterCondition(BaseModel):
-    """Time-based filter condition.
-
-    Evaluator checks current time against allowed days/windows.
-    """
-
-    type: Literal["time_filter"] = "time_filter"
-    days_of_week: list[int] = []  # 0=Mon, 6=Sun
-    time_window: str = ""  # e.g., "09:30-16:00"
-    days_of_month: list[int] = []
-    timezone: str = "UTC"
-
-
-# Discriminated union of all condition types
-Condition = Annotated[
-    CompareCondition
-    | AllOfCondition
-    | AnyOfCondition
-    | NotCondition
-    | RegimeCondition
-    | BreakoutCondition
-    | SqueezeCondition
-    | TimeFilterCondition,
-    Field(discriminator="type"),
-]
-
-# Update forward refs for recursive types
-AllOfCondition.model_rebuild()
-AnyOfCondition.model_rebuild()
-NotCondition.model_rebuild()
-
-
-# =============================================================================
-# Actions
-# =============================================================================
-
-
-class SetHoldingsAction(BaseModel):
-    """Set portfolio holdings to a target allocation."""
-
-    type: Literal["set_holdings"] = "set_holdings"
-    allocation: float = 0.95
-
-
-class LiquidateAction(BaseModel):
-    """Liquidate all holdings."""
-
-    type: Literal["liquidate"] = "liquidate"
-
-
-class MarketOrderAction(BaseModel):
-    """Place a market order for specific quantity."""
-
-    type: Literal["market_order"] = "market_order"
-    quantity: float
-
-
-# Discriminated union of all action types
-Action = Annotated[
-    SetHoldingsAction | LiquidateAction | MarketOrderAction,
-    Field(discriminator="type"),
-]
-
-
-# =============================================================================
-# State Variables
-# =============================================================================
-
-
-class StateVar(BaseModel):
-    """A state variable declaration."""
-
-    id: str
-    var_type: StateType = StateType.FLOAT
-    default: float | int | bool | None = None
-
-
-# =============================================================================
-# State Mutations (for on_fill, on_bar hooks)
-# =============================================================================
-
-
-class SetStateOp(BaseModel):
-    """Set a state variable to a value."""
-
-    type: Literal["set_state"] = "set_state"
-    state_id: str
-    value: ValueRef
-
-
-class IncrementStateOp(BaseModel):
-    """Increment a state variable by 1."""
-
-    type: Literal["increment"] = "increment"
-    state_id: str
-
-
-class MaxStateOp(BaseModel):
-    """Set state to max of current value and new value."""
-
-    type: Literal["max_state"] = "max_state"
-    state_id: str
-    value: ValueRef
-
-
-class SetStateFromConditionOp(BaseModel):
-    """Set a bool state variable from a condition result.
-
-    Used for tracking previous bar state, e.g., "was price below lower band".
-    """
-
-    type: Literal["set_state_from_condition"] = "set_state_from_condition"
-    state_id: str
-    condition: Condition  # Forward ref, will be resolved
-
-
-# Discriminated union of state operations
-StateOp = Annotated[
-    SetStateOp | IncrementStateOp | MaxStateOp | SetStateFromConditionOp,
-    Field(discriminator="type"),
-]
-
-# Update forward refs for SetStateFromConditionOp
-SetStateFromConditionOp.model_rebuild()
-
-
-# =============================================================================
-# Rules
-# =============================================================================
-
-
-class EntryRule(BaseModel):
-    """Entry rule with condition, action, and optional fill hooks."""
-
-    condition: Condition
-    action: Action
-    on_fill: list[StateOp] = Field(default_factory=list)
-
-
-class ExitRule(BaseModel):
-    """Exit rule with id, condition, action, and priority."""
-
-    id: str
-    condition: Condition
-    action: Action
-    priority: int = 0
-
-
-class Gate(BaseModel):
-    """A gate that conditionally allows/blocks other rules."""
-
-    id: str
-    condition: Condition
-    target_roles: list[Literal["entry", "exit"]] = Field(default_factory=lambda: ["entry"])
-    mode: Literal["allow", "block"] = "allow"
-
-
-# =============================================================================
-# Top-level Strategy IR
+# LEAN-specific: StrategyIR with typed indicators
+# The shared library uses IndicatorSpec (generic), but LEAN needs specific types.
 # =============================================================================
 
 
 class StrategyIR(BaseModel):
-    """Complete strategy intermediate representation.
+    """Complete strategy intermediate representation for LEAN execution.
 
-    This is the output of the translator and input to the LEAN runtime.
+    This extends the shared library's StrategyIR with LEAN-specific indicator types.
     """
 
     # Metadata
@@ -571,7 +341,10 @@ class StrategyIR(BaseModel):
     symbol: str
     resolution: Resolution = Resolution.HOUR
 
-    # Indicators to create
+    # Additional symbols to subscribe to (for intermarket strategies)
+    additional_symbols: list[str] = Field(default_factory=list)
+
+    # Indicators to create (LEAN-specific typed union)
     indicators: list[Indicator] = Field(default_factory=list)
 
     # State variables to track
@@ -580,13 +353,16 @@ class StrategyIR(BaseModel):
     # Gates (evaluated before entry/exit)
     gates: list[Gate] = Field(default_factory=list)
 
+    # Overlays (scale risk/size based on conditions)
+    overlays: list[Overlay] = Field(default_factory=list)
+
     # Entry rule
     entry: EntryRule | None = None
 
     # Exit rules (evaluated in priority order)
     exits: list[ExitRule] = Field(default_factory=list)
 
-    # Hooks called every bar (for state tracking, e.g., was_below_lower)
+    # Hooks called every bar (for state tracking)
     on_bar: list[StateOp] = Field(default_factory=list)
 
     # Hooks called every bar when invested

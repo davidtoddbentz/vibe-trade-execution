@@ -11,36 +11,7 @@ from vibe_trade_shared.models import Card, Strategy
 from vibe_trade_shared.models.strategy import Attachment
 
 from src.translator.ir_translator import IRTranslator
-
-
-def make_strategy(cards_dict: dict[str, dict]) -> tuple[Strategy, dict[str, Card]]:
-    """Helper to create a strategy with cards."""
-    attachments = []
-    cards = {}
-
-    for card_id, card_spec in cards_dict.items():
-        role = card_spec["type"].split(".")[0]  # entry, exit, gate
-        attachments.append(Attachment(card_id=card_id, role=role, enabled=True, overrides={}))
-        cards[card_id] = Card(
-            id=card_id,
-            type=card_spec["type"],
-            name=card_spec.get("name", card_id),
-            schema_etag="test",
-            slots=card_spec["slots"],
-            created_at="2024-01-01T00:00:00Z",
-            updated_at="2024-01-01T00:00:00Z",
-        )
-
-    strategy = Strategy(
-        id="test_strategy",
-        name="Test Strategy",
-        universe=["BTC-USD"],
-        attachments=attachments,
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-    )
-
-    return strategy, cards
+from tests.conftest import make_strategy
 
 
 class TestEntryArchetypes:
@@ -215,6 +186,24 @@ class TestEntryArchetypes:
         result = IRTranslator(strategy, cards).translate()
         assert result.entry is not None
 
+        # Semantic assertions: verify IR structure matches archetype intent
+        # 1. Entry condition should be AllOf (trend AND band event)
+        assert result.entry.condition.type == "allOf", "trend_pullback should use AllOf condition"
+        assert len(result.entry.condition.conditions) == 2, "Should have trend and dip conditions"
+
+        # 2. Required indicators: EMA fast/slow + Bollinger bands
+        indicator_types = {ind.type for ind in result.indicators}
+        assert "EMA" in indicator_types, "Should have EMA indicators for trend gate"
+        assert "BB" in indicator_types, "Should have Bollinger bands for dip"
+
+        # 3. State variables for entry tracking
+        state_ids = {sv.id for sv in result.state}
+        assert "entry_price" in state_ids, "Should track entry price"
+        assert "bars_since_entry" in state_ids, "Should track bars since entry"
+
+        # 4. Action direction
+        assert result.entry.action.allocation > 0, "Long entry should have positive allocation"
+
     def test_entry_breakout_trendfollow(self):
         """entry.breakout_trendfollow archetype."""
         strategy, cards = make_strategy(
@@ -232,8 +221,20 @@ class TestEntryArchetypes:
         result = IRTranslator(strategy, cards).translate()
         assert result.entry is not None
 
+        # Semantic assertions
+        # 1. Uses compare condition (price > highest)
+        assert result.entry.condition.type == "compare", "Breakout should compare price to highest"
+
+        # 2. Requires Donchian Channel for lookback high/low
+        indicator_types = {ind.type for ind in result.indicators}
+        assert "DC" in indicator_types, "Should use Donchian Channel for breakout levels"
+
+        # 3. State tracking
+        state_ids = {sv.id for sv in result.state}
+        assert "entry_price" in state_ids, "Should track entry price"
+
     def test_entry_range_mean_reversion(self):
-        """entry.range_mean_reversion via expansion."""
+        """entry.range_mean_reversion via to_ir()."""
         strategy, cards = make_strategy(
             {
                 "entry1": {
@@ -242,7 +243,7 @@ class TestEntryArchetypes:
                         "context": {"tf": "15m", "symbol": "ETH-USD"},
                         "event": {
                             "band": {"band": "bollinger", "length": 20, "mult": 2.0},
-                            "entry": {"kind": "edge_event", "edge": "lower", "op": "touch"},
+                            "trigger": {"kind": "edge_event", "edge": "lower", "op": "touch"},
                         },
                         "action": {"direction": "long"},
                     },
@@ -254,7 +255,7 @@ class TestEntryArchetypes:
         assert result.entry is not None
 
     def test_entry_squeeze_expansion(self):
-        """entry.squeeze_expansion via expansion."""
+        """entry.squeeze_expansion using PCTILE indicator."""
         strategy, cards = make_strategy(
             {
                 "entry1": {
@@ -346,7 +347,7 @@ class TestEntryArchetypes:
         assert result.entry is not None
 
     def test_entry_breakout_retest(self):
-        """entry.breakout_retest archetype via expansion."""
+        """entry.breakout_retest via to_ir() with sequence support."""
         strategy, cards = make_strategy(
             {
                 "entry1": {
@@ -355,10 +356,8 @@ class TestEntryArchetypes:
                         "context": {"tf": "1h", "symbol": "BTC-USD"},
                         "event": {
                             "retest": {
-                                "lookback_bars": 50,
-                                "buffer_bps": 5,
-                                "pullback_pct": -2.0,
-                                "retest_bars": 10,
+                                "break_lookback_bars": 50,
+                                "pullback_depth_atr": 1.5,
                             }
                         },
                         "action": {"direction": "long"},
@@ -369,16 +368,15 @@ class TestEntryArchetypes:
         result = IRTranslator(strategy, cards).translate()
         assert result.entry is not None
 
-    @pytest.mark.xfail(reason="VWAP bands not yet implemented")
     def test_entry_avwap_reversion(self):
-        """entry.avwap_reversion archetype with $infer: substitution."""
+        """entry.avwap_reversion using AVWAP indicator."""
         strategy, cards = make_strategy(
             {
                 "entry1": {
                     "type": "entry.avwap_reversion",
                     "slots": {
                         "context": {"tf": "1h", "symbol": "BTC-USD"},
-                        "event": {"anchor": "session_open", "dist_sigma_entry": 2.0},
+                        "event": {"anchor": {"anchor": "session_open"}, "dist_sigma_entry": 2.0},
                         "action": {"direction": "long"},
                     },
                 }
@@ -387,9 +385,8 @@ class TestEntryArchetypes:
         result = IRTranslator(strategy, cards).translate()
         assert result.entry is not None
 
-    @pytest.mark.xfail(reason="gap_pct metric requires runtime state tracking")
     def test_entry_gap_play(self):
-        """entry.gap_play archetype with time filter."""
+        """entry.gap_play with session gap trading."""
         strategy, cards = make_strategy(
             {
                 "entry1": {
@@ -398,7 +395,7 @@ class TestEntryArchetypes:
                         "context": {"tf": "15m", "symbol": "SPY"},
                         "event": {
                             "session": {
-                                "session": "us_equity",
+                                "session": "us",
                                 "window": "0930-1000",
                                 "mode": "gap_fade",
                             }
@@ -672,7 +669,7 @@ class TestExitArchetypes:
                         "context": {"tf": "1h", "symbol": "ETH-USD"},
                         "event": {
                             "exit_band": {"band": "bollinger", "length": 20, "mult": 2.0},
-                            "exit_trigger": {"kind": "edge_event", "edge": "upper", "op": "touch"},
+                            "exit_trigger": {"edge": "upper"},
                         },
                         "action": {"mode": "close"},
                     },
@@ -682,8 +679,20 @@ class TestExitArchetypes:
         result = IRTranslator(strategy, cards).translate()
         assert len(result.exits) == 1
 
+        # Semantic assertions for exit.band_exit
+        exit_rule = result.exits[0]
+        # 1. Exit condition should be compare (price vs band)
+        assert exit_rule.condition.type == "compare", "Band exit should compare price to band"
+
+        # 2. Bollinger bands should be created
+        indicator_types = {ind.type for ind in result.indicators}
+        assert "BB" in indicator_types, "Should have Bollinger bands"
+
+        # 3. Exit action should be liquidate
+        assert exit_rule.action.type == "liquidate", "Band exit should liquidate position"
+
     def test_exit_structure_break(self):
-        """exit.structure_break via expansion."""
+        """exit.structure_break via to_ir() - exits on MA cross."""
         strategy, cards = make_strategy(
             {
                 "entry1": {
@@ -708,7 +717,7 @@ class TestExitArchetypes:
                     "type": "exit.structure_break",
                     "slots": {
                         "context": {"tf": "4h", "symbol": "BTC-USD"},
-                        "event": {"breakout": {"lookback_bars": 50, "buffer_bps": 5}},
+                        "event": {"structure": {"fast": 20, "slow": 50, "op": "<"}},
                         "action": {"mode": "close"},
                     },
                 },
@@ -718,7 +727,7 @@ class TestExitArchetypes:
         assert len(result.exits) == 1
 
     def test_exit_squeeze_compression(self):
-        """exit.squeeze_compression via expansion."""
+        """exit.squeeze_compression using PCTILE indicator."""
         strategy, cards = make_strategy(
             {
                 "entry1": {
@@ -752,9 +761,8 @@ class TestExitArchetypes:
         result = IRTranslator(strategy, cards).translate()
         assert len(result.exits) == 1
 
-    @pytest.mark.xfail(reason="VWAP bands not yet implemented in translator")
     def test_exit_vwap_reversion(self):
-        """exit.vwap_reversion archetype via expansion."""
+        """exit.vwap_reversion using AVWAP indicator."""
         strategy, cards = make_strategy(
             {
                 "entry1": {
@@ -779,7 +787,7 @@ class TestExitArchetypes:
                     "type": "exit.vwap_reversion",
                     "slots": {
                         "context": {"tf": "1h", "symbol": "BTC-USD"},
-                        "event": {"anchor": "session_open", "dist_sigma_exit": 0.5},
+                        "event": {"anchor": {"anchor": "session_open"}, "dist_sigma_exit": 0.5},
                         "action": {"mode": "close"},
                     },
                 },
@@ -819,15 +827,12 @@ class TestGateArchetypes:
                     "slots": {
                         "context": {"tf": "1h", "symbol": "BTC-USD"},
                         "event": {
-                            "regime": {
-                                "type": "regime",
-                                "regime": {
-                                    "metric": "trend_ma_relation",
-                                    "op": ">",
-                                    "value": 0,
-                                    "ma_fast": 20,
-                                    "ma_slow": 50,
-                                },
+                            "condition": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
                             }
                         },
                         "action": {"mode": "allow", "target_roles": ["entry"]},
@@ -838,7 +843,21 @@ class TestGateArchetypes:
         result = IRTranslator(strategy, cards).translate()
         assert len(result.gates) == 1
 
-    @pytest.mark.xfail(reason="gate.time_filter archetype not yet implemented")
+        # Semantic assertions for gate.regime
+        gate = result.gates[0]
+        # 1. Gate condition should be a compare (for trend_ma_relation)
+        assert gate.condition.type == "compare", "Regime gate should use compare condition"
+
+        # 2. Gate mode should be "allow" (as specified in slots)
+        assert gate.mode == "allow", "Gate mode should match slot configuration"
+
+        # 3. Gate targets entries
+        assert "entry" in gate.target_roles, "Gate should target entries"
+
+        # 4. EMA indicators should be created for ma_fast/ma_slow
+        indicator_types = {ind.type for ind in result.indicators}
+        assert "EMA" in indicator_types, "Should have EMA indicators for regime check"
+
     def test_gate_time_filter(self):
         """gate.time_filter via expansion."""
         strategy, cards = make_strategy(
@@ -864,9 +883,9 @@ class TestGateArchetypes:
                 "gate1": {
                     "type": "gate.time_filter",
                     "slots": {
-                        "context": {"tf": "15m", "symbol": "SPY"},
+                        "context": {"symbol": "SPY"},
                         "event": {
-                            "time_filter": {
+                            "filter": {
                                 "days_of_week": [
                                     "monday",
                                     "tuesday",
@@ -891,7 +910,6 @@ class TestGateArchetypes:
 class TestOverlayArchetypes:
     """Test overlay archetypes translate successfully."""
 
-    @pytest.mark.xfail(reason="Overlay translation not yet implemented")
     def test_overlay_regime_scaler(self):
         """overlay.regime_scaler archetype."""
         strategy, cards = make_strategy(
@@ -939,8 +957,148 @@ class TestOverlayArchetypes:
             }
         )
         result = IRTranslator(strategy, cards).translate()
-        # Overlay should be translated or at least not cause errors
+        # Verify entry and overlay were translated
         assert result.entry is not None
+        assert len(result.overlays) == 1
+
+        # Verify overlay properties
+        overlay = result.overlays[0]
+        assert overlay.scale_risk_frac == 0.5
+        assert overlay.scale_size_frac == 0.5
+        assert overlay.target_roles == ["entry"]
+        assert overlay.condition is not None
+
+    def test_overlay_with_target_tags(self):
+        """overlay.regime_scaler with target_tags filtering."""
+        strategy, cards = make_strategy(
+            {
+                "entry1": {
+                    "type": "entry.rule_trigger",
+                    "slots": {
+                        "context": {"tf": "1h", "symbol": "ETH-USD"},
+                        "event": {
+                            "condition": {
+                                "type": "regime",
+                                "regime": {
+                                    "metric": "trend_ma_relation",
+                                    "op": ">",
+                                    "value": 0,
+                                    "ma_fast": 10,
+                                    "ma_slow": 30,
+                                },
+                            }
+                        },
+                        "action": {"direction": "long"},
+                    },
+                },
+                "overlay1": {
+                    "type": "overlay.regime_scaler",
+                    "slots": {
+                        "context": {"tf": "1h", "symbol": "ETH-USD"},
+                        "event": {
+                            "regime": {
+                                "type": "regime",
+                                "regime": {
+                                    "metric": "vol_atr_pct",
+                                    "op": "<",
+                                    "value": 2.0,
+                                    "lookback_bars": 14,
+                                },
+                            }
+                        },
+                        "action": {
+                            "scale_risk_frac": 0.25,
+                            "scale_size_frac": 0.25,
+                            "target_roles": ["entry", "exit"],
+                            "target_tags": ["breakout"],
+                        },
+                    },
+                },
+            }
+        )
+        result = IRTranslator(strategy, cards).translate()
+        assert len(result.overlays) == 1
+
+        overlay = result.overlays[0]
+        assert overlay.scale_risk_frac == 0.25
+        assert overlay.scale_size_frac == 0.25
+        assert overlay.target_roles == ["entry", "exit"]
+        assert overlay.target_tags == ["breakout"]
+
+    def test_multiple_overlays(self):
+        """Multiple overlay.regime_scaler cards in one strategy."""
+        strategy, cards = make_strategy(
+            {
+                "entry1": {
+                    "type": "entry.rule_trigger",
+                    "slots": {
+                        "context": {"tf": "1h", "symbol": "BTC-USD"},
+                        "event": {
+                            "condition": {
+                                "type": "regime",
+                                "regime": {
+                                    "metric": "ret_pct",
+                                    "op": ">",
+                                    "value": 0.5,
+                                    "lookback_bars": 1,
+                                },
+                            }
+                        },
+                        "action": {"direction": "long"},
+                    },
+                },
+                "overlay_vol": {
+                    "type": "overlay.regime_scaler",
+                    "slots": {
+                        "context": {"tf": "4h", "symbol": "BTC-USD"},
+                        "event": {
+                            "regime": {
+                                "type": "regime",
+                                "regime": {
+                                    "metric": "vol_bb_width_pctile",
+                                    "op": "<",
+                                    "value": 15,
+                                    "lookback_bars": 100,
+                                },
+                            }
+                        },
+                        "action": {
+                            "scale_risk_frac": 0.5,
+                            "scale_size_frac": 0.5,
+                            "target_roles": ["entry"],
+                        },
+                    },
+                },
+                "overlay_trend": {
+                    "type": "overlay.regime_scaler",
+                    "slots": {
+                        "context": {"tf": "1d", "symbol": "BTC-USD"},
+                        "event": {
+                            "regime": {
+                                "type": "regime",
+                                "regime": {
+                                    "metric": "trend_adx",
+                                    "op": "<",
+                                    "value": 20,
+                                    "lookback_bars": 14,
+                                },
+                            }
+                        },
+                        "action": {
+                            "scale_risk_frac": 0.75,
+                            "scale_size_frac": 0.75,
+                            "target_roles": ["entry", "exit"],
+                        },
+                    },
+                },
+            }
+        )
+        result = IRTranslator(strategy, cards).translate()
+        assert len(result.overlays) == 2
+
+        # Both overlays should have been translated with correct properties
+        risk_fracs = {o.scale_risk_frac for o in result.overlays}
+        assert risk_fracs == {0.5, 0.75}
 
 
 class TestComplexStrategies:
@@ -983,7 +1141,7 @@ class TestComplexStrategies:
                         "context": {"tf": "1h", "symbol": "BTC-USD"},
                         "event": {
                             "exit_band": {"band": "bollinger", "length": 20, "mult": 2.0},
-                            "exit_trigger": {"kind": "edge_event", "edge": "upper", "op": "touch"},
+                            "exit_trigger": {"edge": "upper"},
                         },
                         "action": {"mode": "close"},
                     },
@@ -1011,14 +1169,11 @@ class TestComplexStrategies:
                     "slots": {
                         "context": {"tf": "1h", "symbol": "BTC-USD"},
                         "event": {
-                            "regime": {
-                                "type": "regime",
-                                "regime": {
-                                    "metric": "trend_adx",
-                                    "op": ">",
-                                    "value": 25,
-                                    "lookback_bars": 14,
-                                },
+                            "condition": {
+                                "metric": "trend_adx",
+                                "op": ">",
+                                "value": 25,
+                                "lookback_bars": 14,
                             }
                         },
                         "action": {"mode": "allow", "target_roles": ["entry"]},
@@ -1051,7 +1206,7 @@ class TestComplexStrategies:
         assert len(result.exits) == 1
 
     def test_mean_reversion_with_band_exit(self):
-        """Mean reversion with band exit strategy."""
+        """Mean reversion with band exit strategy (both use to_ir())."""
         strategy, cards = make_strategy(
             {
                 "entry1": {
@@ -1060,7 +1215,7 @@ class TestComplexStrategies:
                         "context": {"tf": "15m", "symbol": "ETH-USD"},
                         "event": {
                             "band": {"band": "bollinger", "length": 20, "mult": 2.0},
-                            "entry": {"kind": "edge_event", "edge": "lower", "op": "touch"},
+                            "trigger": {"kind": "edge_event", "edge": "lower", "op": "touch"},
                         },
                         "action": {"direction": "long"},
                     },
@@ -1071,7 +1226,7 @@ class TestComplexStrategies:
                         "context": {"tf": "15m", "symbol": "ETH-USD"},
                         "event": {
                             "exit_band": {"band": "bollinger", "length": 20, "mult": 2.0},
-                            "exit_trigger": {"kind": "edge_event", "edge": "mid", "op": "touch"},
+                            "exit_trigger": {"edge": "mid"},
                         },
                         "action": {"mode": "close"},
                     },
@@ -1082,7 +1237,6 @@ class TestComplexStrategies:
         assert result.entry is not None
         assert len(result.exits) == 1
 
-    @pytest.mark.xfail(reason="Overlay translation not yet implemented")
     def test_full_strategy_with_gate_and_overlay(self):
         """Complete strategy: entry + gate + overlay + multiple exits."""
         strategy, cards = make_strategy(
@@ -1125,14 +1279,11 @@ class TestComplexStrategies:
                     "slots": {
                         "context": {"tf": "4h", "symbol": "BTC-USD"},
                         "event": {
-                            "regime": {
-                                "type": "regime",
-                                "regime": {
-                                    "metric": "trend_adx",
-                                    "op": ">",
-                                    "value": 20,
-                                    "lookback_bars": 14,
-                                },
+                            "condition": {
+                                "metric": "trend_adx",
+                                "op": ">",
+                                "value": 20,
+                                "lookback_bars": 14,
                             }
                         },
                         "action": {"mode": "allow", "target_roles": ["entry"]},
@@ -1201,7 +1352,13 @@ class TestComplexStrategies:
         result = IRTranslator(strategy, cards).translate()
         assert result.entry is not None
         assert len(result.gates) == 1
+        assert len(result.overlays) == 1
         assert len(result.exits) == 2
+
+        # Verify overlay was correctly translated
+        overlay = result.overlays[0]
+        assert overlay.scale_risk_frac == 0.5
+        assert overlay.scale_size_frac == 0.5
 
     def test_multi_gate_strategy(self):
         """Strategy with multiple gates (trend + volatility)."""
@@ -1230,15 +1387,12 @@ class TestComplexStrategies:
                     "slots": {
                         "context": {"tf": "4h", "symbol": "ETH-USD"},
                         "event": {
-                            "regime": {
-                                "type": "regime",
-                                "regime": {
-                                    "metric": "trend_ma_relation",
-                                    "op": ">",
-                                    "value": 0,
-                                    "ma_fast": 20,
-                                    "ma_slow": 50,
-                                },
+                            "condition": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
                             }
                         },
                         "action": {"mode": "allow", "target_roles": ["entry"]},
@@ -1249,14 +1403,11 @@ class TestComplexStrategies:
                     "slots": {
                         "context": {"tf": "1h", "symbol": "ETH-USD"},
                         "event": {
-                            "regime": {
-                                "type": "regime",
-                                "regime": {
-                                    "metric": "vol_atr_pct",
-                                    "op": ">",
-                                    "value": 1,
-                                    "lookback_bars": 14,
-                                },
+                            "condition": {
+                                "metric": "vol_atr_pct",
+                                "op": ">",
+                                "value": 1,
+                                "lookback_bars": 14,
                             }
                         },
                         "action": {"mode": "allow", "target_roles": ["entry"]},
@@ -1406,20 +1557,20 @@ class TestRegimeMetrics:
     """Test all RegimeSpec metrics can be translated."""
 
     @pytest.mark.parametrize(
-        "metric,extra_params",
+        "metric,extra_params,expected_indicators",
         [
-            ("ret_pct", {"lookback_bars": 1}),
-            ("trend_ma_relation", {"ma_fast": 20, "ma_slow": 50}),
-            ("trend_regime", {"ma_fast": 20, "ma_slow": 50}),
-            ("trend_adx", {"lookback_bars": 14}),
-            ("vol_bb_width_pctile", {"lookback_bars": 100}),
-            ("vol_atr_pct", {"lookback_bars": 14}),
-            ("vol_regime", {"lookback_bars": 100}),
-            ("volume_pctile", {"lookback_bars": 20}),
+            ("ret_pct", {"lookback_bars": 1}, {"ROC"}),
+            ("trend_ma_relation", {"ma_fast": 20, "ma_slow": 50}, {"EMA"}),
+            ("trend_regime", {"ma_fast": 20, "ma_slow": 50}, {"EMA"}),
+            ("trend_adx", {"lookback_bars": 14}, {"ADX"}),
+            ("vol_bb_width_pctile", {"lookback_bars": 100}, {"BB", "PCTILE"}),
+            ("vol_atr_pct", {"lookback_bars": 14}, {"ATR"}),
+            ("vol_regime", {"lookback_bars": 100}, {"BB"}),  # Uses BB width
+            ("volume_pctile", {"lookback_bars": 20}, {"VOL_SMA"}),  # Volume SMA
         ],
     )
-    def test_regime_metric(self, metric, extra_params):
-        """Test regime metric translation."""
+    def test_regime_metric(self, metric, extra_params, expected_indicators):
+        """Test regime metric translation produces correct indicators."""
         regime = {"metric": metric, "op": ">", "value": 0, **extra_params}
         strategy, cards = make_strategy(
             {
@@ -1436,13 +1587,26 @@ class TestRegimeMetrics:
         result = IRTranslator(strategy, cards).translate()
         assert result.entry is not None
 
+        # Verify at least one of the expected indicators is created
+        indicator_types = {ind.type for ind in result.indicators}
+        assert indicator_types & expected_indicators, (
+            f"Metric {metric} should create one of {expected_indicators}, got {indicator_types}"
+        )
+
 
 class TestBandTypes:
     """Test all band types can be translated."""
 
-    @pytest.mark.parametrize("band_type", ["bollinger", "keltner", "donchian"])
-    def test_band_type(self, band_type):
-        """Test band type translation."""
+    @pytest.mark.parametrize(
+        "band_type,expected_indicator",
+        [
+            ("bollinger", "BB"),
+            ("keltner", "KC"),
+            ("donchian", "DC"),
+        ],
+    )
+    def test_band_type(self, band_type, expected_indicator):
+        """Test band type translation produces correct indicator."""
         strategy, cards = make_strategy(
             {
                 "entry1": {
@@ -1466,6 +1630,12 @@ class TestBandTypes:
             }
         )
         result = IRTranslator(strategy, cards).translate()
+
+        # Verify correct indicator type is created
+        indicator_types = {ind.type for ind in result.indicators}
+        assert expected_indicator in indicator_types, (
+            f"Band type {band_type} should create {expected_indicator} indicator"
+        )
         assert result.entry is not None
 
 
@@ -1520,7 +1690,6 @@ class TestEventFollowthroughArchetype:
     It's typically expanded to a rule_trigger with event-based conditions.
     """
 
-    @pytest.mark.xfail(reason="entry.event_followthrough archetype not yet implemented")
     def test_entry_event_followthrough_earnings(self):
         """entry.event_followthrough for earnings catalyst."""
         strategy, cards = make_strategy(
@@ -1528,14 +1697,12 @@ class TestEventFollowthroughArchetype:
                 "entry1": {
                     "type": "entry.event_followthrough",
                     "slots": {
-                        "context": {"tf": "15m", "symbol": "AAPL"},
+                        "context": {"symbol": "AAPL"},
                         "event": {
-                            "catalyst": {
+                            "event": {
                                 "event_kind": "earnings",
                                 "entry_window_bars": 8,
-                                "strength_filter": "strong",
-                            },
-                            "follow_mode": "gap_continuation",
+                            }
                         },
                         "action": {"direction": "long"},
                     },
@@ -1543,11 +1710,10 @@ class TestEventFollowthroughArchetype:
             }
         )
         result = IRTranslator(strategy, cards).translate()
-        # Should either expand or produce a warning for unsupported archetype
-        # Either way, translation should complete without error
+        # Should translate to IR with event condition
         assert result is not None
+        assert result.entry is not None
 
-    @pytest.mark.xfail(reason="entry.event_followthrough archetype not yet implemented")
     def test_entry_event_followthrough_macro(self):
         """entry.event_followthrough for macro event catalyst."""
         strategy, cards = make_strategy(
@@ -1555,22 +1721,21 @@ class TestEventFollowthroughArchetype:
                 "entry1": {
                     "type": "entry.event_followthrough",
                     "slots": {
-                        "context": {"tf": "1h", "symbol": "SPY"},
+                        "context": {"symbol": "SPY"},
                         "event": {
-                            "catalyst": {
+                            "event": {
                                 "event_kind": "macro",
                                 "entry_window_bars": 4,
-                                "strength_filter": "normal",
-                            },
-                            "follow_mode": "momentum",
+                            }
                         },
-                        "action": {"direction": "auto"},
+                        "action": {"direction": "long"},
                     },
                 }
             }
         )
         result = IRTranslator(strategy, cards).translate()
         assert result is not None
+        assert result.entry is not None
 
 
 class TestIntermarketTriggerArchetype:
@@ -1580,7 +1745,6 @@ class TestIntermarketTriggerArchetype:
     MVP constraint: follower_symbol must equal context.symbol.
     """
 
-    @pytest.mark.xfail(reason="entry.intermarket_trigger archetype not yet implemented")
     def test_entry_intermarket_single_leader(self):
         """entry.intermarket_trigger with single leader symbol."""
         strategy, cards = make_strategy(
@@ -1590,7 +1754,7 @@ class TestIntermarketTriggerArchetype:
                     "slots": {
                         "context": {"tf": "1h", "symbol": "ETH-USD"},
                         "event": {
-                            "intermarket": {
+                            "lead_follow": {
                                 "leader_symbol": "BTC-USD",
                                 "follower_symbol": "ETH-USD",
                                 "trigger_feature": "ret_pct",
@@ -1605,12 +1769,12 @@ class TestIntermarketTriggerArchetype:
             }
         )
         result = IRTranslator(strategy, cards).translate()
-        # Should either expand or produce a warning for unsupported archetype
         assert result is not None
+        assert result.entry is not None
+        assert "BTC-USD" in result.additional_symbols
 
-    @pytest.mark.xfail(reason="entry.intermarket_trigger archetype not yet implemented")
     def test_entry_intermarket_multiple_leaders(self):
-        """entry.intermarket_trigger with multiple leader symbols."""
+        """entry.intermarket_trigger with multiple leader symbols and aggregation."""
         strategy, cards = make_strategy(
             {
                 "entry1": {
@@ -1618,7 +1782,7 @@ class TestIntermarketTriggerArchetype:
                     "slots": {
                         "context": {"tf": "1h", "symbol": "SOL-USD"},
                         "event": {
-                            "intermarket": {
+                            "lead_follow": {
                                 "leaders": ["BTC-USD", "ETH-USD"],
                                 "follower_symbol": "SOL-USD",
                                 "leader_aggregate": {
@@ -1645,7 +1809,6 @@ class TestEventRiskWindowGate:
     This gate blocks/allows trading within a window around catalyst events.
     """
 
-    @pytest.mark.xfail(reason="gate.event_risk_window archetype not yet implemented")
     def test_gate_event_risk_window_earnings(self):
         """gate.event_risk_window blocking around earnings."""
         strategy, cards = make_strategy(
@@ -1671,30 +1834,27 @@ class TestEventRiskWindowGate:
                 "gate1": {
                     "type": "gate.event_risk_window",
                     "slots": {
-                        "context": {"tf": "15m", "symbol": "AAPL"},
+                        "context": {"tf": "1h", "symbol": "AAPL"},
                         "event": {
                             "catalyst": {
                                 "event_kind": "earnings",
-                                "entry_window_bars": 3,
-                                "strength_filter": "strong",
+                                "entry_window_bars": 8,
                             },
                             "pre_event_bars": 8,
                             "post_event_bars": 12,
                         },
                         "action": {
                             "mode": "block",
-                            "target_roles": ["entry", "overlay"],
-                            "target_tags": ["mean-revert"],
+                            "target_roles": ["entry"],
                         },
                     },
                 },
             }
         )
         result = IRTranslator(strategy, cards).translate()
-        # Either translates gate or warns it's unsupported
+        # Translates gate to event-based condition
         assert result is not None
 
-    @pytest.mark.xfail(reason="gate.event_risk_window archetype not yet implemented")
     def test_gate_event_risk_window_macro(self):
         """gate.event_risk_window blocking around macro events."""
         strategy, cards = make_strategy(
@@ -1724,8 +1884,7 @@ class TestEventRiskWindowGate:
                         "event": {
                             "catalyst": {
                                 "event_kind": "macro",
-                                "entry_window_bars": 2,
-                                "strength_filter": "auto",
+                                "entry_window_bars": 4,
                             },
                             "pre_event_bars": 4,
                             "post_event_bars": 8,
@@ -1882,7 +2041,6 @@ class TestVWAPBandType:
     VWAP with standard deviation bands - used for intraday mean reversion.
     """
 
-    @pytest.mark.xfail(reason="VWAP bands not yet implemented")
     def test_vwap_band_edge_event(self):
         """vwap_band with edge_event touch."""
         strategy, cards = make_strategy(
@@ -1912,7 +2070,6 @@ class TestVWAPBandType:
         # Either way should not crash
         assert result is not None
 
-    @pytest.mark.xfail(reason="VWAP bands not yet implemented")
     def test_vwap_band_distance(self):
         """vwap_band with distance z-score."""
         strategy, cards = make_strategy(
@@ -1941,7 +2098,6 @@ class TestVWAPBandType:
         result = IRTranslator(strategy, cards).translate()
         assert result is not None
 
-    @pytest.mark.xfail(reason="VWAP bands not yet implemented")
     def test_vwap_band_anchor_session(self):
         """vwap_band with session anchor (default/most common)."""
         strategy, cards = make_strategy(
@@ -1974,7 +2130,6 @@ class TestVWAPBandType:
         result = IRTranslator(strategy, cards).translate()
         assert result is not None
 
-    @pytest.mark.xfail(reason="VWAP bands not yet implemented")
     def test_vwap_band_anchor_week(self):
         """vwap_band with weekly anchor."""
         strategy, cards = make_strategy(
@@ -2008,7 +2163,6 @@ class TestVWAPBandType:
         result = IRTranslator(strategy, cards).translate()
         assert result is not None
 
-    @pytest.mark.xfail(reason="VWAP bands not yet implemented")
     def test_vwap_band_anchor_month(self):
         """vwap_band with monthly anchor."""
         strategy, cards = make_strategy(
@@ -2041,7 +2195,6 @@ class TestVWAPBandType:
         result = IRTranslator(strategy, cards).translate()
         assert result is not None
 
-    @pytest.mark.xfail(reason="VWAP bands not yet implemented")
     def test_vwap_band_anchor_earnings(self):
         """vwap_band anchored to earnings (event-based)."""
         strategy, cards = make_strategy(
@@ -2073,7 +2226,6 @@ class TestVWAPBandType:
         result = IRTranslator(strategy, cards).translate()
         assert result is not None
 
-    @pytest.mark.xfail(reason="VWAP bands not yet implemented")
     def test_vwap_band_anchor_custom(self):
         """vwap_band with custom anchor date."""
         strategy, cards = make_strategy(
@@ -2255,7 +2407,6 @@ class TestFlagPatternMetric:
 class TestPriceLevelMetrics:
     """Test price_level_touch and price_level_cross with dynamic references."""
 
-    @pytest.mark.xfail(reason="session_high level reference requires runtime support")
     def test_price_level_touch_session_high(self):
         """price_level_touch with session_high reference."""
         strategy, cards = make_strategy(
@@ -2284,9 +2435,8 @@ class TestPriceLevelMetrics:
         result = IRTranslator(strategy, cards).translate()
         assert result.entry is not None
 
-    @pytest.mark.xfail(reason="recent_support level reference requires runtime support")
     def test_price_level_cross_recent_support(self):
-        """price_level_cross with recent_support reference."""
+        """price_level_cross with recent_support reference (rolling min low)."""
         strategy, cards = make_strategy(
             {
                 "entry1": {
@@ -2354,7 +2504,6 @@ class TestPriceLevelMetrics:
 class TestGapMetrics:
     """Test gap_pct metric."""
 
-    @pytest.mark.xfail(reason="gap_pct metric requires runtime state tracking")
     def test_gap_pct_positive(self):
         """gap_pct positive gap filter."""
         strategy, cards = make_strategy(
@@ -2382,7 +2531,6 @@ class TestGapMetrics:
         result = IRTranslator(strategy, cards).translate()
         assert result.entry is not None
 
-    @pytest.mark.xfail(reason="gap_pct metric requires runtime state tracking")
     def test_gap_pct_negative(self):
         """gap_pct negative gap filter."""
         strategy, cards = make_strategy(
@@ -2492,14 +2640,11 @@ class TestComplexMultiComponentStrategies:
                     "slots": {
                         "context": {"tf": "4h", "symbol": "ETH-USD"},
                         "event": {
-                            "regime": {
-                                "type": "regime",
-                                "regime": {
-                                    "metric": "trend_adx",
-                                    "op": ">",
-                                    "value": 25,
-                                    "lookback_bars": 14,
-                                },
+                            "condition": {
+                                "metric": "trend_adx",
+                                "op": ">",
+                                "value": 25,
+                                "lookback_bars": 14,
                             }
                         },
                         "action": {"mode": "allow", "target_roles": ["entry"]},
@@ -2595,16 +2740,16 @@ class TestIRValidation:
                     },
                 }
             },
-            # trend_pullback
+            # trend_pullback (schema v2 format)
             {
                 "entry1": {
                     "type": "entry.trend_pullback",
                     "slots": {
                         "context": {"tf": "1h", "symbol": "BTC-USD"},
                         "event": {
-                            "trend_indicator": {"indicator": "ema", "period": 50},
-                            "pullback_indicator": {"indicator": "ema", "period": 20},
-                            "min_pullback_percent": 0.02,
+                            "dip_band": {"band": "bollinger", "length": 20, "mult": 2.0},
+                            "dip": {"kind": "edge_event", "edge": "lower", "op": "touch"},
+                            "trend_gate": {"fast": 20, "slow": 50, "op": ">"},
                         },
                         "action": {"direction": "long"},
                     },
@@ -2643,7 +2788,7 @@ class TestIRValidation:
                 "exit1": {
                     "type": "exit.rule_trigger",
                     "slots": {
-                        "context": {"tf": "1h"},
+                        "context": {"tf": "1h", "symbol": "BTC-USD"},
                         "event": {
                             "condition": {
                                 "type": "regime",
@@ -2664,9 +2809,9 @@ class TestIRValidation:
                 "exit1": {
                     "type": "exit.trailing_stop",
                     "slots": {
-                        "context": {"tf": "1h"},
+                        "context": {"tf": "1h", "symbol": "BTC-USD"},
                         "event": {
-                            "trail_band": {"band": "atr", "length": 14, "mult": 2.0},
+                            "trail_band": {"band": "keltner", "length": 14, "mult": 2.0},
                         },
                         "action": {"mode": "close"},
                     },
@@ -2677,10 +2822,10 @@ class TestIRValidation:
                 "exit1": {
                     "type": "exit.band_exit",
                     "slots": {
-                        "context": {"tf": "1h"},
+                        "context": {"tf": "1h", "symbol": "BTC-USD"},
                         "event": {
-                            "band": {"band": "bollinger", "length": 20, "mult": 2.0},
-                            "exit_edge": "upper",
+                            "exit_band": {"band": "bollinger", "length": 20, "mult": 2.0},
+                            "exit_trigger": {"edge": "upper"},
                         },
                         "action": {"mode": "close"},
                     },
@@ -2719,8 +2864,8 @@ class TestIRValidation:
                 "exit1": {
                     "type": "exit.trailing_stop",
                     "slots": {
-                        "context": {"tf": "1h"},
-                        "event": {"trail_band": {"band": "atr", "length": 14, "mult": 2.0}},
+                        "context": {"tf": "1h", "symbol": "BTC-USD"},
+                        "event": {"trail_band": {"band": "keltner", "length": 14, "mult": 2.0}},
                         "action": {"mode": "close"},
                     },
                 },

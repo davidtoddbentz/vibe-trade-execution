@@ -98,9 +98,9 @@ class BacktestService:
             # Step 1: Translate strategy to IR
             logger.info("Translating strategy to IR...")
             translator = IRTranslator(strategy, cards)
-            ir_result = translator.translate()
+            strategy_ir = translator.translate()
 
-            if not ir_result or not ir_result.ir:
+            if not strategy_ir:
                 return BacktestResult(
                     status="error",
                     strategy_id=request.strategy_id,
@@ -110,8 +110,8 @@ class BacktestService:
                 )
 
             # Step 2: Serialize IR to dict for HTTP request
-            ir_dict = ir_result.ir.model_dump()
-            ir_json = ir_result.ir.model_dump_json(indent=2)
+            ir_dict = strategy_ir.model_dump()
+            ir_json = strategy_ir.model_dump_json(indent=2)
 
             # Step 3: Call backtest service endpoint
             logger.info(f"Calling backtest service at {self.backtest_url}")

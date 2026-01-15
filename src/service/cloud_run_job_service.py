@@ -169,6 +169,7 @@ class CloudRunJobService:
         """
         # Environment variables for the LEAN container
         env_vars = [
+            run_v2.EnvVar(name="GOOGLE_CLOUD_PROJECT", value=self.project_id),
             run_v2.EnvVar(name="BACKTEST_ID", value=backtest_id),
             run_v2.EnvVar(
                 name="STRATEGY_IR_GCS_PATH", value=f"gs://{self.results_bucket}/{ir_gcs_path}"

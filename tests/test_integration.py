@@ -6,50 +6,13 @@ This module consolidates:
 """
 
 import json
-from pathlib import Path
 
 import pytest
 from vibe_trade_shared.models import Card, Strategy
 from vibe_trade_shared.models.strategy import Attachment
 
+from tests.conftest import MockIndicator, MockPriceBar
 from src.translator import ConditionEvaluator, EvalContext, IRTranslator, StrategyIR
-
-# =============================================================================
-# Mock Classes (for tests that need them inline)
-# =============================================================================
-
-
-class MockIndicatorCurrent:
-    """Mock for indicator.Current property."""
-
-    def __init__(self, value: float):
-        self.Value = value
-
-
-class MockIndicator:
-    """Mock for a simple indicator (EMA, SMA, ROC, etc.)."""
-
-    def __init__(self, value: float, is_ready: bool = True):
-        self.Current = MockIndicatorCurrent(value)
-        self.IsReady = is_ready
-
-
-class MockPriceBar:
-    """Mock for LEAN price bar."""
-
-    def __init__(
-        self,
-        open_: float = 100.0,
-        high: float = 105.0,
-        low: float = 95.0,
-        close: float = 102.0,
-        volume: float = 1000.0,
-    ):
-        self.Open = open_
-        self.High = high
-        self.Low = low
-        self.Close = close
-        self.Volume = volume
 
 
 # =============================================================================
@@ -147,10 +110,10 @@ class TestTranslationPipeline:
         assert ir_dict["symbol"] == "BTC-USD"
         assert ir_dict["resolution"] == "Hour"
 
-        # Verify indicators
+        # Verify indicators (param-based naming: ema_20, ema_50)
         assert len(ir_dict["indicators"]) == 2
         indicator_ids = {ind["id"] for ind in ir_dict["indicators"]}
-        assert indicator_ids == {"ema_fast", "ema_slow"}
+        assert indicator_ids == {"ema_20", "ema_50"}
 
         # Verify entry
         assert ir_dict["entry"] is not None
@@ -187,11 +150,11 @@ class TestTranslationPipeline:
         translator = IRTranslator(strategy, cards)
         result = translator.translate()
 
-        # Scenario 1: EMA fast > EMA slow (should trigger entry)
+        # Scenario 1: EMA 20 > EMA 50 (should trigger entry)
         ctx_bullish = EvalContext(
             indicators={
-                "ema_fast": MockIndicator(105.0),
-                "ema_slow": MockIndicator(100.0),
+                "ema_20": MockIndicator(105.0),
+                "ema_50": MockIndicator(100.0),
             },
             state={"entry_price": None, "bars_since_entry": 0},
             price_bar=MockPriceBar(),
@@ -199,20 +162,20 @@ class TestTranslationPipeline:
 
         evaluator = ConditionEvaluator()
         entry_result = evaluator.evaluate(result.entry.condition, ctx_bullish)
-        assert entry_result is True, "Entry should trigger when EMA fast > EMA slow"
+        assert entry_result is True, "Entry should trigger when EMA 20 > EMA 50"
 
-        # Scenario 2: EMA fast < EMA slow (should trigger exit)
+        # Scenario 2: EMA 20 < EMA 50 (should trigger exit)
         ctx_bearish = EvalContext(
             indicators={
-                "ema_fast": MockIndicator(95.0),
-                "ema_slow": MockIndicator(100.0),
+                "ema_20": MockIndicator(95.0),
+                "ema_50": MockIndicator(100.0),
             },
             state={"entry_price": 100.0, "bars_since_entry": 5},
             price_bar=MockPriceBar(),
         )
 
         exit_result = evaluator.evaluate(result.exits[0].condition, ctx_bearish)
-        assert exit_result is True, "Exit should trigger when EMA fast < EMA slow"
+        assert exit_result is True, "Exit should trigger when EMA 20 < EMA 50"
 
     def test_ir_json_compatible_with_lean_runtime(self, ema_crossover_strategy):
         """Test that IR JSON has correct structure for LEAN runtime."""
@@ -251,11 +214,11 @@ class TestTranslationPipeline:
         assert "op" in entry_cond
         assert "right" in entry_cond
 
-        # Verify value references
+        # Verify value references (param-based naming)
         assert entry_cond["left"]["type"] == "indicator"
-        assert entry_cond["left"]["indicator_id"] == "ema_fast"
+        assert entry_cond["left"]["indicator_id"] == "ema_20"
         assert entry_cond["right"]["type"] == "indicator"
-        assert entry_cond["right"]["indicator_id"] == "ema_slow"
+        assert entry_cond["right"]["indicator_id"] == "ema_50"
 
 
 # =============================================================================
@@ -305,6 +268,7 @@ class TestComplexStrategyTranslation:
                         "exit_band": {"band": "bollinger", "length": 20, "mult": 2.0},
                         "exit_trigger": {"edge": "upper"},
                     },
+                    "action": {"mode": "close"},
                 },
                 schema_etag="test",
                 created_at="2024-01-01T00:00:00Z",
@@ -374,10 +338,9 @@ class TestComplexStrategyTranslation:
         translator = IRTranslator(strategy, cards)
         result = translator.translate()
 
-        # Should have MAX, MIN, and ATR indicators
+        # Should have DC (Donchian Channel for breakout) and ATR indicators
         indicator_types = {ind.type for ind in result.indicators}
-        assert "MAX" in indicator_types
-        assert "MIN" in indicator_types
+        assert "DC" in indicator_types  # breakout uses Donchian Channel
         assert "ATR" in indicator_types
 
         # Entry should compare price to highest
