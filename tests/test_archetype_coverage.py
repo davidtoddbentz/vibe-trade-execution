@@ -2881,3 +2881,161 @@ class TestIRValidation:
         # Must have on_bar_invested hook to update state
         assert len(result.on_bar_invested) >= 1, "Missing on_bar_invested hook"
         assert result.on_bar_invested[0].state_id == "highest_since_entry"
+
+
+# =============================================================================
+# Pairs Trade Archetype Tests (Multi-Symbol)
+# =============================================================================
+
+
+class TestPairsTradeArchetype:
+    """Test pairs_trade archetype - multi-symbol spread trading."""
+
+    def test_pairs_trade_zscore(self):
+        """entry.pairs_trade with zscore spread type."""
+        strategy, cards = make_strategy(
+            {
+                "entry1": {
+                    "type": "entry.pairs_trade",
+                    "slots": {
+                        "context": {"tf": "1h", "symbol": "ETH-USD"},
+                        "event": {
+                            "pairs": {
+                                "leg_a_symbol": "ETH-USD",
+                                "leg_b_symbol": "BTC-USD",
+                                "spread_type": "zscore",
+                                "window_bars": 100,
+                                "entry_threshold": 2.0,
+                                "exit_threshold": 0.5,
+                            }
+                        },
+                        "action": {"direction": "auto"},
+                    },
+                },
+            }
+        )
+        result = IRTranslator(strategy, cards).translate()
+        assert result.entry is not None
+        # Should produce an IRRuntimeCondition
+        assert result.entry.condition.type == "runtime"
+        assert result.entry.condition.condition_type == "pairs_trade"
+        # Parameters should include spread config
+        assert result.entry.condition.params["leg_a_symbol"] == "ETH-USD"
+        assert result.entry.condition.params["leg_b_symbol"] == "BTC-USD"
+        assert result.entry.condition.params["spread_type"] == "zscore"
+        assert result.entry.condition.params["entry_threshold"] == 2.0
+
+    def test_pairs_trade_ratio(self):
+        """entry.pairs_trade with ratio spread type."""
+        strategy, cards = make_strategy(
+            {
+                "entry1": {
+                    "type": "entry.pairs_trade",
+                    "slots": {
+                        "context": {"tf": "4h", "symbol": "SPY"},
+                        "event": {
+                            "pairs": {
+                                "leg_a_symbol": "SPY",
+                                "leg_b_symbol": "QQQ",
+                                "spread_type": "ratio",
+                                "window_bars": 50,
+                                "entry_threshold": 1.5,
+                                "exit_threshold": 0.25,
+                            }
+                        },
+                        "action": {"direction": "long_spread"},
+                    },
+                },
+            }
+        )
+        result = IRTranslator(strategy, cards).translate()
+        assert result.entry is not None
+        assert result.entry.condition.type == "runtime"
+        # Direction should be passed through
+        assert result.entry.condition.params["direction"] == "long_spread"
+
+
+# =============================================================================
+# Trailing Breakout Archetype Tests
+# =============================================================================
+
+
+class TestTrailingBreakoutArchetype:
+    """Test trailing_breakout archetype - entry on trail band break."""
+
+    def test_trailing_breakout_keltner(self):
+        """entry.trailing_breakout with Keltner channel."""
+        strategy, cards = make_strategy(
+            {
+                "entry1": {
+                    "type": "entry.trailing_breakout",
+                    "slots": {
+                        "context": {"tf": "4h", "symbol": "BTC-USD"},
+                        "event": {
+                            "trail_band": {"band": "keltner", "length": 20, "mult": 1.5},
+                            "trail_trigger": {"kind": "edge_event", "edge": "upper", "op": "cross_out"},
+                        },
+                        "action": {"direction": "long"},
+                    },
+                },
+            }
+        )
+        result = IRTranslator(strategy, cards).translate()
+        assert result.entry is not None
+        # Should produce an IRRuntimeCondition
+        assert result.entry.condition.type == "runtime"
+        assert result.entry.condition.condition_type == "trailing_breakout"
+        # Inline IndicatorRefs get converted to indicator IDs during translation
+        assert len(result.entry.condition.indicators_required) >= 1
+        ind_id = result.entry.condition.indicators_required[0]
+        # Should have registered a KC indicator
+        indicator_types = [i.type for i in result.indicators]
+        assert "KC" in indicator_types, f"Expected KC indicator, got {indicator_types}"
+
+    def test_trailing_breakout_bollinger(self):
+        """entry.trailing_breakout with Bollinger Bands."""
+        strategy, cards = make_strategy(
+            {
+                "entry1": {
+                    "type": "entry.trailing_breakout",
+                    "slots": {
+                        "context": {"tf": "1h", "symbol": "ETH-USD"},
+                        "event": {
+                            "trail_band": {"band": "bollinger", "length": 20, "mult": 2.0},
+                            "trail_trigger": {"kind": "edge_event", "edge": "upper", "op": "cross_out"},
+                        },
+                        "action": {"direction": "long", "confirm": "close_confirm"},
+                    },
+                },
+            }
+        )
+        result = IRTranslator(strategy, cards).translate()
+        assert result.entry is not None
+        assert result.entry.condition.type == "runtime"
+        # Should have registered a BB indicator
+        indicator_types = [i.type for i in result.indicators]
+        assert "BB" in indicator_types, f"Expected BB indicator, got {indicator_types}"
+
+    def test_trailing_breakout_donchian(self):
+        """entry.trailing_breakout with Donchian channel."""
+        strategy, cards = make_strategy(
+            {
+                "entry1": {
+                    "type": "entry.trailing_breakout",
+                    "slots": {
+                        "context": {"tf": "1d", "symbol": "AAPL"},
+                        "event": {
+                            "trail_band": {"band": "donchian", "length": 10, "mult": 1.0},
+                            "trail_trigger": {"kind": "edge_event", "edge": "upper", "op": "cross_out"},
+                        },
+                        "action": {"direction": "long"},
+                    },
+                },
+            }
+        )
+        result = IRTranslator(strategy, cards).translate()
+        assert result.entry is not None
+        assert result.entry.condition.type == "runtime"
+        # Should have registered a DC indicator
+        indicator_types = [i.type for i in result.indicators]
+        assert "DC" in indicator_types, f"Expected DC indicator, got {indicator_types}"
