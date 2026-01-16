@@ -8,7 +8,6 @@ from datetime import date, datetime
 from typing import Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
-
 from vibe_trade_shared.models.data import OHLCVBar
 
 

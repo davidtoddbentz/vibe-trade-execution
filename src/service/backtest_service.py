@@ -20,6 +20,7 @@ from datetime import datetime
 from typing import Any
 
 import httpx
+from vibe_trade_shared.models.data import OHLCVBar
 
 from src.models.lean_backtest import (
     BacktestConfig,
@@ -29,7 +30,6 @@ from src.models.lean_backtest import (
 )
 from src.service.data_service import DataService
 from src.translator.ir_translator import IRTranslator
-from vibe_trade_shared.models.data import OHLCVBar
 
 logger = logging.getLogger(__name__)
 

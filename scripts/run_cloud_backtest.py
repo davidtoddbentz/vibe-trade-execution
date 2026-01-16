@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """Run a test backtest on Cloud Run."""
 
-import asyncio
 import json
-import sys
 import time
 from datetime import datetime
 
@@ -133,7 +131,7 @@ def create_and_run_job(backtest_id: str, ir_gcs_path: str) -> str:
         print(f"✅ Job created: {created_job.name}")
     except Exception as e:
         if "already exists" in str(e):
-            print(f"⚠️  Job already exists, deleting and recreating...")
+            print("⚠️  Job already exists, deleting and recreating...")
             jobs_client.delete_job(name=f"{parent}/jobs/{job_name}").result()
             time.sleep(2)
             operation = jobs_client.create_job(parent=parent, job=job, job_id=job_name)
@@ -143,7 +141,7 @@ def create_and_run_job(backtest_id: str, ir_gcs_path: str) -> str:
             raise
 
     # Run job
-    print(f"▶️  Running job...")
+    print("▶️  Running job...")
     run_operation = jobs_client.run_job(name=created_job.name)
     execution = run_operation.result()
     print(f"✅ Execution started: {execution.name}")
@@ -165,7 +163,7 @@ def wait_for_completion(execution_name: str, timeout: int = 600) -> dict:
         for condition in execution.conditions:
             if condition.type_ == "Completed":
                 if condition.state == run_v2.Condition.State.CONDITION_SUCCEEDED:
-                    print(f"✅ Job completed successfully!")
+                    print("✅ Job completed successfully!")
                     return {"status": "completed", "execution": execution}
                 elif condition.state == run_v2.Condition.State.CONDITION_FAILED:
                     print(f"❌ Job failed: {condition.message}")
@@ -231,7 +229,7 @@ def main():
     result = wait_for_completion(execution_name)
 
     print(f"\n{'='*60}")
-    print(f"📊 RESULTS")
+    print("📊 RESULTS")
     print(f"{'='*60}\n")
 
     if result["status"] == "completed":
@@ -246,7 +244,7 @@ def main():
         logs = fetch_logs(backtest_id)
         if logs:
             print(f"\n{'='*60}")
-            print(f"📝 LOGS (last 50 lines)")
+            print("📝 LOGS (last 50 lines)")
             print(f"{'='*60}\n")
             print("\n".join(logs.split("\n")[-50:]))
     else:

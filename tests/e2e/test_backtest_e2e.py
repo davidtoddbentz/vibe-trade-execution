@@ -33,46 +33,44 @@ from datetime import datetime, timezone
 
 import httpx
 import pytest
-
-# Mark all tests in this module as e2e
-pytestmark = pytest.mark.e2e
-
-from src.service.backtest_service import BacktestService, BacktestRequest
 from vibe_trade_shared.models.data import OHLCVBar
 from vibe_trade_shared.models.ir import (
-    StrategyIR,
-    IndicatorSpec,
-    StateVarSpec,
+    AllOfCondition,
+    AnyOfCondition,
+    CompareCondition,
+    CompareOp,
+    CrossCondition,
     EntryRule,
     ExitRule,
     GateRule,
-    OverlayRule,
-    CompareCondition,
-    CrossCondition,
-    AllOfCondition,
-    AnyOfCondition,
+    IncrementStateAction,
+    IndicatorBandRef,
+    IndicatorRef,
+    IndicatorSpec,
+    IRExpression,
+    LiquidateAction,
+    LiteralRef,
+    MaxStateAction,
     NotCondition,
+    OverlayRule,
+    PriceField,
+    PriceRef,
     RegimeCondition,
     SequenceCondition,
     SequenceStep,
-    IndicatorRef,
-    IndicatorBandRef,
-    IndicatorPropertyRef,
-    PriceRef,
-    LiteralRef,
-    StateRef,
-    VolumeRef,
-    TimeRef,
-    IRExpression,
     SetHoldingsAction,
-    LiquidateAction,
     SetStateAction,
-    IncrementStateAction,
-    MaxStateAction,
-    CompareOp,
-    PriceField,
+    StateRef,
+    StateVarSpec,
+    StrategyIR,
+    TimeRef,
+    VolumeRef,
 )
 
+from src.service.backtest_service import BacktestRequest, BacktestService
+
+# Mark all tests in this module as e2e
+pytestmark = pytest.mark.e2e
 
 # =============================================================================
 # Test Data Builders
@@ -4590,13 +4588,13 @@ class TestTimeConditions:
 
 
 # =============================================================================
-# Short Position Tests
+# Short Position Tests (Extended)
 # =============================================================================
 
 
 @requires_lean
-class TestShortPositions:
-    """Test short selling strategies."""
+class TestShortPositionsExtended:
+    """Test additional short selling strategies."""
 
     def test_short_entry_price_below_threshold(self, backtest_service):
         """Short entry when price drops below threshold.

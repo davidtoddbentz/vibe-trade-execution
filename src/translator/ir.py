@@ -27,65 +27,61 @@ from pydantic import BaseModel, Field
 # =============================================================================
 # Re-export everything from shared library
 # =============================================================================
-
 from vibe_trade_shared.models.ir import (  # noqa: F401
-    # Enums
-    BandField,
-    CompareOp,
-    IndicatorProperty,
-    PriceField,
-    StateType,
-    # Value references
-    ExpressionValue,
-    IndicatorBandValue,
-    IndicatorPropertyValue,
-    IndicatorValue,
-    LiteralValue,
-    PriceValue,
-    RollingWindowValue,
-    StateValue,
-    TimeValue,
-    ValueRef,
-    VolumeValue,
+    # Actions
+    Action,
     # Conditions
     AllOfCondition,
     AnyOfCondition,
+    # Enums
+    BandField,
     BreakoutCondition,
     CompareCondition,
+    CompareOp,
     Condition,
-    NotCondition,
-    RegimeCondition,
-    SequenceCondition,
-    SequenceStep,
-    SqueezeCondition,
-    TimeFilterCondition,
-    # Runtime conditions
-    IREventWindowCondition,
-    IRRuntimeCondition,
-    RuntimeCondition,
-    # Actions
-    Action,
-    LiquidateAction,
-    MarketOrderAction,
-    SetHoldingsAction,
-    # State operations
-    IncrementStateOp,
-    MaxStateOp,
-    MinStateOp,
-    SetStateFromConditionOp,
-    SetStateOp,
-    StateOp,
     # Rules
     EntryRule,
     ExitRule,
+    # Value references
+    ExpressionValue,
     Gate,
+    # State operations
+    IncrementStateOp,
+    IndicatorBandValue,
+    IndicatorProperty,
+    IndicatorPropertyValue,
+    IndicatorValue,
+    # Runtime conditions
+    IREventWindowCondition,
+    IRRuntimeCondition,
+    LiquidateAction,
+    LiteralValue,
+    MarketOrderAction,
+    MaxStateOp,
+    MinStateOp,
+    NotCondition,
     Overlay,
+    PriceField,
+    PriceValue,
+    RegimeCondition,
+    RollingWindowValue,
+    RuntimeCondition,
+    SequenceCondition,
+    SequenceStep,
+    SetHoldingsAction,
+    SetStateFromConditionOp,
+    SetStateOp,
+    SqueezeCondition,
+    StateOp,
+    StateType,
+    StateValue,
     # State variables
     StateVar,
-    # Strategy IR (uses IndicatorSpec, we'll override indicators field)
-    StrategyIR as SharedStrategyIR,
+    TimeFilterCondition,
+    TimeValue,
+    ValueRef,
+    VolumeValue,
 )
-
 
 # =============================================================================
 # LEAN-specific: Resolution Enum

@@ -10,8 +10,9 @@ This script:
 This proves that strategies created via MCP will execute correctly.
 """
 
-import subprocess
 import json
+import subprocess
+
 import requests
 from vibe_trade_shared.models import Card, Strategy
 from vibe_trade_shared.models.strategy import Attachment

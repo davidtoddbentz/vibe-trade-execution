@@ -7,7 +7,6 @@ import os
 from datetime import datetime, timedelta
 
 from google.cloud import bigquery
-
 from vibe_trade_shared.models.data import OHLCVBar
 
 from .data_service import DataFetchError, DataService

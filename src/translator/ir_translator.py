@@ -10,66 +10,42 @@ from typing import Any
 from vibe_trade_shared.models import Card, Strategy
 from vibe_trade_shared.models.archetypes import parse_archetype
 
-
-logger = logging.getLogger(__name__)
 from .ir import (
     ADX,
     ATR,
     EMA,
     SMA,
     VWAP,
-    AllOfCondition,
     AnchoredVWAP,
-    AnyOfCondition,
-    BandField,
     BollingerBands,
-    CompareCondition,
     CompareOp,
     Condition,
     DonchianChannel,
     EntryRule,
     ExitRule,
-    ExpressionValue,
     Gap,
     Gate,
     Indicator,
-    IndicatorBandValue,
-    IndicatorProperty,
-    IndicatorPropertyValue,
-    IndicatorValue,
-    IncrementStateOp,
     KeltnerChannel,
     LiquidateAction,
-    LiteralValue,
     Maximum,
-    MaxStateOp,
     Minimum,
-    NotCondition,
     Overlay,
     Percentile,
-    PriceField,
-    PriceValue,
     RateOfChange,
-    RegimeCondition,
     Resolution,
     RollingMinMax,
     RollingWindow,
-    RollingWindowValue,
-    SessionHighLow,
     SetHoldingsAction,
-    SetStateFromConditionOp,
-    SetStateOp,
     StateOp,
     StateType,
-    StateValue,
     StateVar,
     StrategyIR,
-    TimeValue,
     VolumeSMA,
-    VolumeValue,
-    VWAPBands,
 )
 from .ir_validator import validate_ir
+
+logger = logging.getLogger(__name__)
 
 
 class TranslationError(Exception):

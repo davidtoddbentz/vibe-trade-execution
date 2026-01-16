@@ -1,4 +1,5 @@
 .PHONY: install locally run test test-cov lint lint-fix format format-check check ci clean \
+	test-e2e test-e2e-smoke test-e2e-conditions test-e2e-indicators test-e2e-exits test-e2e-gates test-e2e-shorts test-e2e-class \
 	backtest-container-start backtest-container-stop backtest-container-logs \
 	lean-list lean-start lean-stop lean-logs \
 	build-image docker-build docker-build-lean docker-build-lean-service docker-push docker-build-push \
@@ -44,11 +45,53 @@ backtest:
 			uv run python run_backtest.py --config $(CONFIG) --csv $(CSV) --cash $$CASH; \
 		fi
 
+# Note: All tests are now e2e tests (require LEAN running)
+# Use `make test-e2e` to run all tests
 test:
-	uv run python -m pytest tests/ -v
+	uv run python -m pytest tests/e2e/ -v
 
 test-cov:
-	uv run python -m pytest tests/ --cov=src --cov-report=term-missing --cov-report=html --cov-fail-under=60
+	uv run python -m pytest tests/e2e/ --cov=src --cov-report=term-missing --cov-report=html --cov-fail-under=60
+
+# =============================================================================
+# E2E Test Commands (require LEAN backtest service running)
+# =============================================================================
+
+# Run all e2e tests (requires LEAN: make backtest-container-start)
+test-e2e:
+	uv run python -m pytest tests/e2e/ -v
+
+# Quick smoke test - basic functionality (fast)
+test-e2e-smoke:
+	uv run python -m pytest tests/e2e/test_backtest_e2e.py -v -k "test_entry_on_exact_bar or test_crossover_entry"
+
+# Test conditions (allOf, anyOf, not, compare operators)
+test-e2e-conditions:
+	uv run python -m pytest tests/e2e/test_backtest_e2e.py -v -k "Condition or Operators"
+
+# Test indicators (EMA, BB, RSI, MACD, etc.)
+test-e2e-indicators:
+	uv run python -m pytest tests/e2e/test_backtest_e2e.py -v -k "EMA or Bollinger or RSI or MACD or ADX or ATR or SMA or Keltner or Donchian or VWAP"
+
+# Test exits and state
+test-e2e-exits:
+	uv run python -m pytest tests/e2e/test_backtest_e2e.py -v -k "Exit or State or Stop"
+
+# Test gates and overlays
+test-e2e-gates:
+	uv run python -m pytest tests/e2e/test_backtest_e2e.py -v -k "Gate or Overlay"
+
+# Test short positions
+test-e2e-shorts:
+	uv run python -m pytest tests/e2e/test_backtest_e2e.py -v -k "Short"
+
+# Run a specific test class (e.g., make test-e2e-class CLASS=TestBollingerBands)
+test-e2e-class:
+	@if [ -z "$(CLASS)" ]; then \
+		echo "Usage: make test-e2e-class CLASS=<TestClassName>"; \
+		exit 1; \
+	fi
+	uv run python -m pytest tests/e2e/test_backtest_e2e.py -v -k "$(CLASS)"
 
 lint:
 	uv run ruff check .
