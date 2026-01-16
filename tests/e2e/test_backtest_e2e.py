@@ -4562,3 +4562,840 @@ class TestTimeConditions:
         trades = result.response.trades
         # Entry should only happen at hour 9 or later
         assert len(trades) >= 1, "Expected entry after hour 9"
+
+
+# =============================================================================
+# Short Position Tests
+# =============================================================================
+
+
+@requires_lean
+class TestShortPositions:
+    """Test short selling strategies."""
+
+    def test_short_entry_price_below_threshold(self, backtest_service):
+        """Short entry when price drops below threshold.
+
+        Strategy: Short when close < 100 (bearish signal)
+        Uses negative allocation for short position.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-short-below",
+            strategy_name="Short Below Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=CompareCondition(
+                    left=PriceRef(field=PriceField.CLOSE),
+                    op=CompareOp.LT,
+                    right=LiteralRef(value=100.0),
+                ),
+                action=SetHoldingsAction(allocation=-0.95),  # Negative = short
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Price drops below 100
+        bars = make_bars([105, 103, 101, 99, 97, 95, 93, 95, 97])
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-short-below",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected short entry when price < 100"
+        assert trades[0].direction == "short", f"Expected short direction, got {trades[0].direction}"
+
+    def test_short_with_stop_loss(self, backtest_service):
+        """Short position with stop loss (price rises = loss).
+
+        Strategy: Short when close < 100, stop loss at 2% (price rising)
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-short-stop",
+            strategy_name="Short Stop Loss Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=CompareCondition(
+                    left=PriceRef(field=PriceField.CLOSE),
+                    op=CompareOp.LT,
+                    right=LiteralRef(value=100.0),
+                ),
+                action=SetHoldingsAction(allocation=-0.95),
+                on_fill=[],
+            ),
+            exits=[
+                ExitRule(
+                    id="stop_loss",
+                    condition=CompareCondition(
+                        left=StateRef(state_id="pnl_pct"),
+                        op=CompareOp.LTE,
+                        right=LiteralRef(value=-0.02),  # -2% loss
+                    ),
+                    action=LiquidateAction(),
+                ),
+            ],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Price drops, entry at 99, then rises to trigger stop
+        bars = make_bars([105, 103, 101, 99, 98, 97, 99, 101, 103, 105])
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-short-stop",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected short trade"
+        assert trades[0].direction == "short"
+        # Trade should have exited (stop loss triggered)
+        assert trades[0].exit_bar is not None, "Expected exit from stop loss"
+
+    def test_short_take_profit(self, backtest_service):
+        """Short position with take profit (price falls = profit).
+
+        Strategy: Short when close < 100, take profit at 3% (price falling)
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-short-tp",
+            strategy_name="Short Take Profit Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=CompareCondition(
+                    left=PriceRef(field=PriceField.CLOSE),
+                    op=CompareOp.LT,
+                    right=LiteralRef(value=100.0),
+                ),
+                action=SetHoldingsAction(allocation=-0.95),
+                on_fill=[],
+            ),
+            exits=[
+                ExitRule(
+                    id="take_profit",
+                    condition=CompareCondition(
+                        left=StateRef(state_id="pnl_pct"),
+                        op=CompareOp.GTE,
+                        right=LiteralRef(value=0.03),  # +3% profit
+                    ),
+                    action=LiquidateAction(),
+                ),
+            ],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Price drops steadily - short should profit
+        bars = make_bars([105, 103, 101, 99, 97, 95, 93, 91, 89, 87])
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-short-tp",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected short trade"
+        assert trades[0].direction == "short"
+
+    def test_short_rsi_overbought(self, backtest_service):
+        """Short when RSI indicates overbought conditions.
+
+        Strategy: Short when RSI > 70 (overbought = expect price drop)
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-short-rsi",
+            strategy_name="Short RSI Overbought Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[
+                IndicatorSpec(id="rsi", type="RSI", period=14),
+            ],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=CompareCondition(
+                    left=IndicatorRef(indicator_id="rsi"),
+                    op=CompareOp.GT,
+                    right=LiteralRef(value=70.0),
+                ),
+                action=SetHoldingsAction(allocation=-0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Strong uptrend to push RSI high
+        bars = make_trending_bars(start_price=100.0, num_bars=30, trend_pct_per_bar=0.5)
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-short-rsi",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected short entry on RSI > 70"
+        assert trades[0].direction == "short"
+
+
+# =============================================================================
+# Extreme Volatility Tests
+# =============================================================================
+
+
+@requires_lean
+class TestExtremeVolatility:
+    """Test strategies under extreme market conditions."""
+
+    def test_large_price_spike(self, backtest_service):
+        """Handle 20% price spike in single bar.
+
+        Simulates flash crash/pump scenarios common in crypto.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-spike",
+            strategy_name="Price Spike Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[
+                IndicatorSpec(id="ema20", type="EMA", period=20),
+            ],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=CompareCondition(
+                    left=PriceRef(field=PriceField.CLOSE),
+                    op=CompareOp.GT,
+                    right=IndicatorRef(indicator_id="ema20"),
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[
+                ExitRule(
+                    id="stop_loss",
+                    condition=CompareCondition(
+                        left=StateRef(state_id="pnl_pct"),
+                        op=CompareOp.LTE,
+                        right=LiteralRef(value=-0.05),
+                    ),
+                    action=LiquidateAction(),
+                ),
+            ],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Normal bars, then 20% spike, then crash
+        normal_bars = [
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + i * 60_000,
+                     o=100.0, h=101.0, l=99.0, c=100.0, v=1000.0)
+            for i in range(25)
+        ]
+        # Spike bar: +20%
+        spike_bar = OHLCVBar(
+            t=DEFAULT_BASE_TIMESTAMP_MS + 25 * 60_000,
+            o=100.0, h=125.0, l=100.0, c=120.0, v=5000.0
+        )
+        # Crash bars: -15%
+        crash_bars = [
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + (26 + i) * 60_000,
+                     o=120.0 - i * 3, h=121.0 - i * 3, l=117.0 - i * 3,
+                     c=118.0 - i * 3, v=3000.0)
+            for i in range(5)
+        ]
+        bars = normal_bars + [spike_bar] + crash_bars
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-spike",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        # Should handle extreme volatility without crashing
+
+    def test_flash_crash_recovery(self, backtest_service):
+        """Handle flash crash (-30%) and recovery.
+
+        Tests that strategy survives extreme drawdown.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-crash",
+            strategy_name="Flash Crash Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=CompareCondition(
+                    left=PriceRef(field=PriceField.CLOSE),
+                    op=CompareOp.GT,
+                    right=LiteralRef(value=95.0),
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Normal, crash, recovery
+        bars = []
+        base_ts = DEFAULT_BASE_TIMESTAMP_MS
+
+        # Normal trading
+        for i in range(10):
+            bars.append(OHLCVBar(t=base_ts + i * 60_000,
+                                 o=100.0, h=101.0, l=99.0, c=100.0, v=1000.0))
+
+        # Flash crash: 100 -> 70 (-30%)
+        bars.append(OHLCVBar(t=base_ts + 10 * 60_000,
+                             o=100.0, h=100.0, l=68.0, c=70.0, v=10000.0))
+
+        # Recovery
+        for i in range(10):
+            price = 70.0 + i * 3  # Recover from 70 to 97
+            bars.append(OHLCVBar(t=base_ts + (11 + i) * 60_000,
+                                 o=price, h=price + 1, l=price - 1, c=price, v=2000.0))
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-crash",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+
+    def test_high_frequency_oscillation(self, backtest_service):
+        """Handle rapid price oscillations (whipsaw).
+
+        Tests strategy with price swinging 5% each bar.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-whipsaw",
+            strategy_name="Whipsaw Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[
+                IndicatorSpec(id="ema5", type="EMA", period=5),
+            ],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=CrossCondition(
+                    left=PriceRef(field=PriceField.CLOSE),
+                    right=IndicatorRef(indicator_id="ema5"),
+                    direction="above",
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[
+                ExitRule(
+                    id="cross_below",
+                    condition=CrossCondition(
+                        left=PriceRef(field=PriceField.CLOSE),
+                        right=IndicatorRef(indicator_id="ema5"),
+                        direction="below",
+                    ),
+                    action=LiquidateAction(),
+                ),
+            ],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Oscillating prices: up 5%, down 5%, repeat
+        bars = []
+        base_ts = DEFAULT_BASE_TIMESTAMP_MS
+        for i in range(30):
+            if i % 2 == 0:
+                price = 100.0
+            else:
+                price = 105.0  # 5% swing
+            bars.append(OHLCVBar(t=base_ts + i * 60_000,
+                                 o=price - 2, h=price + 2, l=price - 3, c=price, v=1000.0))
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-whipsaw",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        # Should handle multiple entries/exits from whipsaw
+
+    def test_zero_volume_bars(self, backtest_service):
+        """Handle bars with zero or near-zero volume.
+
+        Some exchanges report 0 volume during illiquid periods.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-zero-vol",
+            strategy_name="Zero Volume Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[
+                IndicatorSpec(id="vol_sma", type="VOL_SMA", period=10),
+            ],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=CompareCondition(
+                    left=PriceRef(field=PriceField.CLOSE),
+                    op=CompareOp.GT,
+                    right=LiteralRef(value=100.0),
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Mix of normal and zero-volume bars
+        bars = []
+        base_ts = DEFAULT_BASE_TIMESTAMP_MS
+        for i in range(20):
+            vol = 0.0 if i % 5 == 0 else 1000.0  # Every 5th bar has 0 volume
+            price = 99.0 if i < 10 else 101.0
+            bars.append(OHLCVBar(t=base_ts + i * 60_000,
+                                 o=price, h=price + 0.5, l=price - 0.5, c=price, v=vol))
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-zero-vol",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+
+
+# =============================================================================
+# Real BTC Price Pattern Tests
+# =============================================================================
+
+
+@requires_lean
+class TestRealisticBTCPatterns:
+    """Test with realistic BTC price patterns and ranges."""
+
+    def test_btc_price_range(self, backtest_service):
+        """Test with realistic BTC prices ($30k-$70k range).
+
+        Verifies no precision/overflow issues with large prices.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-btc-range",
+            strategy_name="BTC Price Range Test",
+            symbol="BTCUSD",
+            resolution="Minute",
+            indicators=[
+                IndicatorSpec(id="ema20", type="EMA", period=20),
+            ],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=CompareCondition(
+                    left=PriceRef(field=PriceField.CLOSE),
+                    op=CompareOp.GT,
+                    right=IndicatorRef(indicator_id="ema20"),
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[
+                ExitRule(
+                    id="stop_loss",
+                    condition=CompareCondition(
+                        left=StateRef(state_id="pnl_pct"),
+                        op=CompareOp.LTE,
+                        right=LiteralRef(value=-0.02),
+                    ),
+                    action=LiquidateAction(),
+                ),
+            ],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Realistic BTC prices: $45k range
+        bars = []
+        base_ts = DEFAULT_BASE_TIMESTAMP_MS
+        base_price = 45000.0
+        for i in range(30):
+            # Small random-ish walk around $45k
+            offset = (i % 7 - 3) * 100  # -300 to +300
+            price = base_price + offset + i * 10  # Slight uptrend
+            bars.append(OHLCVBar(
+                t=base_ts + i * 60_000,
+                o=price - 50,
+                h=price + 100,
+                l=price - 100,
+                c=price,
+                v=10.5  # BTC volume in BTC units
+            ))
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-btc-range",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="BTCUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected trade at BTC price levels"
+
+    def test_btc_small_percentage_moves(self, backtest_service):
+        """Test detection of small percentage moves at high prices.
+
+        0.1% of $50k = $50, must detect correctly.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-btc-small",
+            strategy_name="BTC Small Move Test",
+            symbol="BTCUSD",
+            resolution="Minute",
+            indicators=[
+                IndicatorSpec(id="bb", type="BOLLINGER", period=20, std_dev=2.0),
+            ],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=CompareCondition(
+                    left=PriceRef(field=PriceField.CLOSE),
+                    op=CompareOp.LT,
+                    right=IndicatorBandRef(indicator_id="bb", band="lower"),
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[
+                ExitRule(
+                    id="middle_band",
+                    condition=CompareCondition(
+                        left=PriceRef(field=PriceField.CLOSE),
+                        op=CompareOp.GT,
+                        right=IndicatorBandRef(indicator_id="bb", band="middle"),
+                    ),
+                    action=LiquidateAction(),
+                ),
+            ],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # BTC with small moves (0.1-0.5% per bar)
+        bars = []
+        base_ts = DEFAULT_BASE_TIMESTAMP_MS
+        price = 50000.0
+        for i in range(35):
+            # Small percentage moves
+            if i < 25:
+                price = 50000.0 + (i - 12) * 25  # Range: 49700 - 50300
+            else:
+                # Dip to lower band then recover
+                price = 49500.0 if i < 30 else 50000.0
+
+            bars.append(OHLCVBar(
+                t=base_ts + i * 60_000,
+                o=price - 10,
+                h=price + 20,
+                l=price - 20,
+                c=price,
+                v=5.0
+            ))
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-btc-small",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="BTCUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+
+    def test_btc_typical_daily_range(self, backtest_service):
+        """Test with typical BTC daily range (2-5% intraday).
+
+        Simulates realistic intraday BTC movement.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-btc-daily",
+            strategy_name="BTC Daily Range Test",
+            symbol="BTCUSD",
+            resolution="Minute",
+            indicators=[
+                IndicatorSpec(id="rsi", type="RSI", period=14),
+                IndicatorSpec(id="ema50", type="EMA", period=50),
+            ],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=AllOfCondition(
+                    conditions=[
+                        CompareCondition(
+                            left=IndicatorRef(indicator_id="rsi"),
+                            op=CompareOp.LT,
+                            right=LiteralRef(value=30.0),
+                        ),
+                        CompareCondition(
+                            left=PriceRef(field=PriceField.CLOSE),
+                            op=CompareOp.GT,
+                            right=IndicatorRef(indicator_id="ema50"),
+                        ),
+                    ],
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[
+                ExitRule(
+                    id="rsi_overbought",
+                    condition=CompareCondition(
+                        left=IndicatorRef(indicator_id="rsi"),
+                        op=CompareOp.GT,
+                        right=LiteralRef(value=70.0),
+                    ),
+                    action=LiquidateAction(),
+                ),
+            ],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Simulate typical BTC day: down in morning, recovery, afternoon rally
+        bars = []
+        base_ts = DEFAULT_BASE_TIMESTAMP_MS
+        base_price = 42000.0
+
+        # Morning dip (60 bars = 1 hour)
+        for i in range(60):
+            price = base_price - i * 10  # Drop $600 (1.4%)
+            bars.append(OHLCVBar(
+                t=base_ts + i * 60_000,
+                o=price + 5, h=price + 20, l=price - 30, c=price,
+                v=15.0
+            ))
+
+        # Consolidation (30 bars)
+        for i in range(30):
+            price = 41400.0 + (i % 5 - 2) * 20
+            bars.append(OHLCVBar(
+                t=base_ts + (60 + i) * 60_000,
+                o=price, h=price + 15, l=price - 15, c=price,
+                v=8.0
+            ))
+
+        # Afternoon rally (60 bars)
+        for i in range(60):
+            price = 41400.0 + i * 15  # Rally $900 (2.2%)
+            bars.append(OHLCVBar(
+                t=base_ts + (90 + i) * 60_000,
+                o=price - 5, h=price + 30, l=price - 10, c=price,
+                v=20.0
+            ))
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-btc-daily",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="BTCUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+
+    def test_btc_weekend_low_volume(self, backtest_service):
+        """Test with low weekend volume pattern.
+
+        BTC trades 24/7 but weekends often have 50% less volume.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-btc-weekend",
+            strategy_name="BTC Weekend Volume Test",
+            symbol="BTCUSD",
+            resolution="Minute",
+            indicators=[
+                IndicatorSpec(id="vol_sma", type="VOL_SMA", period=20),
+            ],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=AllOfCondition(
+                    conditions=[
+                        CompareCondition(
+                            left=PriceRef(field=PriceField.CLOSE),
+                            op=CompareOp.GT,
+                            right=LiteralRef(value=40000.0),
+                        ),
+                        # Only enter on higher volume
+                        CompareCondition(
+                            left=VolumeRef(),
+                            op=CompareOp.GT,
+                            right=IndicatorRef(indicator_id="vol_sma"),
+                        ),
+                    ],
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Low volume bars (weekend-like)
+        bars = []
+        base_ts = DEFAULT_BASE_TIMESTAMP_MS
+        for i in range(40):
+            price = 39500.0 + i * 30  # Gradual rise
+            # Vary volume: low for first 25 bars, spike after
+            vol = 2.0 if i < 25 else 8.0
+            bars.append(OHLCVBar(
+                t=base_ts + i * 60_000,
+                o=price - 10, h=price + 30, l=price - 30, c=price,
+                v=vol
+            ))
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-btc-weekend",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="BTCUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
