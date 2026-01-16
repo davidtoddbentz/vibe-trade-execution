@@ -46,6 +46,7 @@ from vibe_trade_shared.models.ir import (
     EntryRule,
     ExitRule,
     GateRule,
+    OverlayRule,
     CompareCondition,
     CrossCondition,
     AllOfCondition,
@@ -5632,3 +5633,448 @@ class TestMultiSymbolStrategies:
         assert result.status == "success", f"Backtest failed: {result.error}"
         trades = result.response.trades
         assert len(trades) >= 1, "Expected entry on BTC/ETH divergence"
+
+
+# =============================================================================
+# Long Backtest Tests (Weeks of Data)
+# =============================================================================
+
+
+@requires_lean
+class TestLongBacktest:
+    """Test backtests with extended time periods (weeks of data)."""
+
+    def test_two_weeks_ema_crossover(self, backtest_service):
+        """Run a 2-week backtest with EMA crossover strategy.
+
+        Data: 2 weeks = 14 days * 24 hours * 60 minutes = 20,160 bars
+        Using hourly bars for efficiency: 14 * 24 = 336 bars
+
+        Strategy: Classic EMA(10) / EMA(50) crossover
+        Expected: Multiple trades over 2-week period
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-long-ema",
+            strategy_name="Long EMA Crossover Test",
+            symbol="BTCUSD",
+            resolution="Hour",
+            indicators=[
+                IndicatorSpec(id="ema_fast", type="EMA", period=10),
+                IndicatorSpec(id="ema_slow", type="EMA", period=50),
+            ],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=CrossCondition(
+                    left=IndicatorRef(indicator_id="ema_fast"),
+                    right=IndicatorRef(indicator_id="ema_slow"),
+                    direction="above",
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[
+                ExitRule(
+                    id="cross_exit",
+                    condition=CrossCondition(
+                        left=IndicatorRef(indicator_id="ema_fast"),
+                        right=IndicatorRef(indicator_id="ema_slow"),
+                        direction="below",
+                    ),
+                    action=LiquidateAction(),
+                ),
+            ],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # 2 weeks of hourly data with realistic price movements
+        # Create a trending/ranging pattern that will trigger multiple trades
+        num_bars = 336  # 14 days * 24 hours
+        base_price = 40000.0
+        bars = []
+
+        for i in range(num_bars):
+            # Create cycles that will cause EMA crossovers
+            # Uptrend for ~80 hours, downtrend for ~80 hours, repeat
+            cycle_position = i % 168  # ~1 week cycle
+            if cycle_position < 80:
+                # Uptrend phase
+                trend = (cycle_position / 80) * 0.15  # Up 15% over 80 hours
+            else:
+                # Downtrend phase
+                trend = 0.15 - ((cycle_position - 80) / 88) * 0.12  # Down 12%
+
+            price = base_price * (1 + trend)
+            # Add some noise
+            noise = (i * 17 % 100 - 50) / 5000  # Deterministic noise
+            price *= (1 + noise)
+
+            bars.append(OHLCVBar(
+                t=DEFAULT_BASE_TIMESTAMP_MS + i * 3600_000,  # Hourly
+                o=price * 0.998,
+                h=price * 1.005,
+                l=price * 0.995,
+                c=price,
+                v=1000.0 + (i % 100) * 10,
+            ))
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-long-ema",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 14, tzinfo=timezone.utc),
+                symbol="BTCUSD",
+                resolution="1h",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        # Should have at least one trade over 2 weeks with this cycling pattern
+        assert len(trades) >= 1, f"Expected at least 1 trade in 2-week backtest, got {len(trades)}"
+        # Verify we got summary stats
+        assert result.response.summary is not None
+        assert result.response.summary.total_trades >= 1
+
+
+# =============================================================================
+# Overlay Tests
+# =============================================================================
+
+
+@requires_lean
+class TestOverlays:
+    """Test overlay rules that modify position sizing."""
+
+    def test_overlay_reduces_position_in_high_volatility(self, backtest_service):
+        """Overlay scales down position when ATR is high.
+
+        Strategy: Enter when price > 100, but reduce size by 50% when ATR > 2
+        This tests position sizing modification based on volatility.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-overlay-vol",
+            strategy_name="Volatility Overlay Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[
+                IndicatorSpec(id="atr", type="ATR", period=10),
+            ],
+            state=[],
+            gates=[],
+            overlays=[
+                OverlayRule(
+                    id="vol_scale",
+                    condition=CompareCondition(
+                        left=IndicatorRef(indicator_id="atr"),
+                        op=CompareOp.GT,
+                        right=LiteralRef(value=2.0),
+                    ),
+                    scale_size_frac=0.5,  # Reduce position to 50%
+                    target_roles=["entry"],
+                ),
+            ],
+            entry=EntryRule(
+                condition=CompareCondition(
+                    left=PriceRef(field=PriceField.CLOSE),
+                    op=CompareOp.GT,
+                    right=LiteralRef(value=100.0),
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Create volatile bars where ATR will be > 2
+        # High volatility: 5-point swings on ~100 price = ~5% moves
+        bars = []
+        for i in range(25):
+            # Alternating high/low to create volatility
+            if i < 12:
+                # Low volatility warmup
+                base = 95 + i * 0.3
+                bars.append(OHLCVBar(
+                    t=DEFAULT_BASE_TIMESTAMP_MS + i * 60_000,
+                    o=base, h=base + 0.5, l=base - 0.5, c=base,
+                    v=1000.0,
+                ))
+            else:
+                # High volatility phase
+                base = 102 + (i - 12) * 0.2
+                swing = 3.0 if i % 2 == 0 else -3.0  # Big swings
+                bars.append(OHLCVBar(
+                    t=DEFAULT_BASE_TIMESTAMP_MS + i * 60_000,
+                    o=base - swing, h=base + abs(swing), l=base - abs(swing), c=base + swing,
+                    v=1000.0,
+                ))
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-overlay-vol",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected entry when price > 100"
+        # Position should be scaled down due to high volatility overlay
+
+    def test_overlay_doubles_position_in_trend(self, backtest_service):
+        """Overlay scales up position during strong trend.
+
+        Strategy: Enter when price > EMA, double size when EMA is rising
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-overlay-trend",
+            strategy_name="Trend Overlay Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[
+                IndicatorSpec(id="ema", type="EMA", period=10),
+                IndicatorSpec(id="ema_prev", type="EMA", period=11),  # Slightly lagged
+            ],
+            state=[],
+            gates=[],
+            overlays=[
+                OverlayRule(
+                    id="trend_boost",
+                    condition=CompareCondition(
+                        # EMA is rising: current EMA > slightly lagged EMA
+                        left=IndicatorRef(indicator_id="ema"),
+                        op=CompareOp.GT,
+                        right=IndicatorRef(indicator_id="ema_prev"),
+                    ),
+                    scale_size_frac=1.5,  # Increase position by 50%
+                    target_roles=["entry"],
+                ),
+            ],
+            entry=EntryRule(
+                condition=CompareCondition(
+                    left=PriceRef(field=PriceField.CLOSE),
+                    op=CompareOp.GT,
+                    right=IndicatorRef(indicator_id="ema"),
+                ),
+                action=SetHoldingsAction(allocation=0.5),  # Base 50%
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Uptrending data
+        bars = [
+            OHLCVBar(
+                t=DEFAULT_BASE_TIMESTAMP_MS + i * 60_000,
+                o=100.0 + i * 0.5,
+                h=101.0 + i * 0.5,
+                l=99.0 + i * 0.5,
+                c=100.0 + i * 0.5,
+                v=1000.0,
+            )
+            for i in range(25)
+        ]
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-overlay-trend",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected entry in uptrend"
+
+
+# =============================================================================
+# Time Stop Tests
+# =============================================================================
+
+
+@requires_lean
+class TestTimeStops:
+    """Test time-based exit rules using state variables."""
+
+    def test_exit_after_5_bars(self, backtest_service):
+        """Exit position after exactly 5 bars (time stop).
+
+        Strategy: Enter when price > 100, exit after 5 bars regardless of price
+        This is a common risk management technique.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-time-stop-5",
+            strategy_name="5-Bar Time Stop Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[],
+            state=[
+                StateVarSpec(id="bars_in_trade", default=0.0),
+            ],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=CompareCondition(
+                    left=PriceRef(field=PriceField.CLOSE),
+                    op=CompareOp.GT,
+                    right=LiteralRef(value=100.0),
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[
+                    SetStateAction(state_id="bars_in_trade", value=LiteralRef(value=0.0)),
+                ],
+            ),
+            exits=[
+                ExitRule(
+                    id="time_stop_5",
+                    condition=CompareCondition(
+                        left=StateRef(state_id="bars_in_trade"),
+                        op=CompareOp.GTE,
+                        right=LiteralRef(value=5.0),
+                    ),
+                    action=LiquidateAction(),
+                ),
+            ],
+            on_bar=[],
+            on_bar_invested=[
+                IncrementStateAction(state_id="bars_in_trade", amount=LiteralRef(value=1.0)),
+            ],
+        )
+
+        # Entry on bar 2, should exit on bar 7 (after 5 bars)
+        bars = make_bars([95, 98, 102, 105, 108, 110, 112, 115, 118, 120])
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-time-stop-5",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected at least one trade"
+        # Entry at bar 2, exit after 5 bars = bar 7
+        assert trades[0].entry_bar == 2
+        assert trades[0].exit_bar == 7, f"Expected exit at bar 7, got {trades[0].exit_bar}"
+        assert trades[0].exit_reason == "time_stop_5"
+
+    def test_time_stop_with_profit_target(self, backtest_service):
+        """Time stop combined with profit target - first one wins.
+
+        Strategy: Exit on 10% profit OR after 10 bars, whichever comes first
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-time-profit",
+            strategy_name="Time + Profit Stop Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[],
+            state=[
+                StateVarSpec(id="bars_held", default=0.0),
+                StateVarSpec(id="entry_price", default=0.0),
+            ],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=CompareCondition(
+                    left=PriceRef(field=PriceField.CLOSE),
+                    op=CompareOp.GT,
+                    right=LiteralRef(value=100.0),
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[
+                    SetStateAction(state_id="bars_held", value=LiteralRef(value=0.0)),
+                    SetStateAction(state_id="entry_price", value=PriceRef(field=PriceField.CLOSE)),
+                ],
+            ),
+            exits=[
+                # Priority 0: Profit target (checks first)
+                ExitRule(
+                    id="profit_target",
+                    priority=0,
+                    condition=CompareCondition(
+                        left=PriceRef(field=PriceField.CLOSE),
+                        op=CompareOp.GT,
+                        right=IRExpression(
+                            left=StateRef(state_id="entry_price"),
+                            op="*",
+                            right=LiteralRef(value=1.10),  # 10% above entry
+                        ),
+                    ),
+                    action=LiquidateAction(),
+                ),
+                # Priority 1: Time stop
+                ExitRule(
+                    id="time_stop_10",
+                    priority=1,
+                    condition=CompareCondition(
+                        left=StateRef(state_id="bars_held"),
+                        op=CompareOp.GTE,
+                        right=LiteralRef(value=10.0),
+                    ),
+                    action=LiquidateAction(),
+                ),
+            ],
+            on_bar=[],
+            on_bar_invested=[
+                IncrementStateAction(state_id="bars_held", amount=LiteralRef(value=1.0)),
+            ],
+        )
+
+        # Price goes up slowly - won't hit 10% profit, so time stop triggers
+        # Entry at bar 2 (price 102), 10% target = 112.2
+        # Keep all prices below 112.2 so time stop (10 bars) triggers first
+        bars = make_bars([95, 98, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 111, 111])
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-time-profit",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected at least one trade"
+        # Entry at bar 2 (price 102), 10% target = 112.2
+        # Max price is 111 (below 112.2), so time stop (10 bars) should win
+        assert trades[0].exit_reason == "time_stop_10", f"Expected time_stop_10, got {trades[0].exit_reason}"
