@@ -22,12 +22,20 @@ Strategy coverage:
 To run these tests:
     1. Start LEAN: cd vibe-trade-lean && make run-api
     2. Run tests: uv run pytest tests/e2e/ -v
+
+To skip E2E tests during development:
+    uv run pytest -m "not e2e"
+
+~7 seconds per test, ~7 minutes total for 63 tests.
 """
 
 from datetime import datetime, timezone
 
 import httpx
 import pytest
+
+# Mark all tests in this module as e2e
+pytestmark = pytest.mark.e2e
 
 from src.service.backtest_service import BacktestService, BacktestRequest
 from vibe_trade_shared.models.data import OHLCVBar
