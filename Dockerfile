@@ -10,7 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 RUN chmod +x /usr/local/bin/uv
 
-# Copy the execution service project
+# Copy the execution service and its local dependencies
+COPY vibe-trade-shared/ ./vibe-trade-shared/
 COPY vibe-trade-execution/ ./vibe-trade-execution/
 WORKDIR /workspace/vibe-trade-execution
 
