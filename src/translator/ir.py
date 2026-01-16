@@ -55,6 +55,8 @@ from vibe_trade_shared.models.ir import (  # noqa: F401
     Condition,
     NotCondition,
     RegimeCondition,
+    SequenceCondition,
+    SequenceStep,
     SqueezeCondition,
     TimeFilterCondition,
     # Runtime conditions

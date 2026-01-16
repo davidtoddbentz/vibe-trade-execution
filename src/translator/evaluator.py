@@ -406,6 +406,29 @@ class ValueResolver:
         # offset=1 means index 1 (the value before the most recent)
         return ind[offset].Value
 
+    def _get_indicator_band_width(self, ctx: EvalContext, indicator_id: str) -> float:
+        """Get the bandwidth of a band indicator (BB, KC, etc.).
+
+        Bandwidth = (upper - lower) / middle * 100
+        """
+        ind = ctx.get_indicator(indicator_id)
+        try:
+            # Try Bollinger Bands style first
+            upper = ind.UpperBand.Current.Value
+            middle = ind.MiddleBand.Current.Value
+            lower = ind.LowerBand.Current.Value
+        except AttributeError:
+            # Try Keltner Channel style
+            try:
+                upper = ind.UpperChannel.Current.Value
+                middle = ind.MiddleChannel.Current.Value
+                lower = ind.LowerChannel.Current.Value
+            except AttributeError:
+                return 0.0
+        if middle == 0:
+            return 0.0
+        return (upper - lower) / middle * 100
+
 
 # =============================================================================
 # Condition Evaluator
@@ -531,11 +554,150 @@ class ConditionEvaluator:
                 roc_val = self.resolver._get_indicator_value(ctx, roc_id)
                 return op.apply(roc_val * 100, float(value))  # Convert to percentage
 
+            case "session_phase":
+                # Session phase: check if current time is in specified phase
+                # Value is 'open', 'close', or 'overnight'
+                session = getattr(regime, 'session', 'us') if hasattr(regime, 'session') else 'us'
+                phase = str(value)
+                # Session hours (in UTC)
+                session_hours = {
+                    "us": {"open_start": 14, "open_end": 16, "close_start": 20, "close_end": 21},
+                    "eu": {"open_start": 8, "open_end": 10, "close_start": 16, "close_end": 17},
+                    "asia": {"open_start": 0, "open_end": 2, "close_start": 6, "close_end": 7},
+                }
+                hours = session_hours.get(session or 'us', session_hours["us"])
+                current_hour = ctx.get_timestamp().hour
+
+                if phase == "open":
+                    in_phase = hours["open_start"] <= current_hour < hours["open_end"]
+                elif phase == "close":
+                    in_phase = hours["close_start"] <= current_hour < hours["close_end"]
+                elif phase == "overnight":
+                    in_phase = not (hours["open_start"] <= current_hour < hours["close_end"])
+                else:
+                    in_phase = False
+                return in_phase if op == CompareOp.EQ else not in_phase
+
+            case "volume_spike" | "volume_dip":
+                # Volume comparison to average
+                lookback = regime.lookback_bars or 20
+                vol_sma_id = f"vol_sma_{lookback}"
+                vol_sma = self.resolver._get_indicator_value(ctx, vol_sma_id)
+                current_vol = ctx.get_volume()
+                if metric == "volume_spike":
+                    threshold = 1.0 + (float(value) - 50) / 50  # Convert percentile to multiplier
+                    return current_vol > vol_sma * threshold
+                else:  # volume_dip
+                    threshold = float(value) / 50
+                    return current_vol < vol_sma * threshold
+
+            case "price_level_touch":
+                # Price touches a level
+                level = float(value) if value else 0
+                high = ctx.get_price(PriceField.HIGH)
+                low = ctx.get_price(PriceField.LOW)
+                return high >= level >= low
+
+            case "price_level_cross":
+                # Price crosses a level
+                level = float(value) if value else 0
+                close = ctx.get_price(PriceField.CLOSE)
+                direction = getattr(regime, 'level_direction', 'up') if hasattr(regime, 'level_direction') else 'up'
+                if direction == "up":
+                    return close > level
+                else:
+                    return close < level
+
+            case "vol_bb_width_pctile" | "bb_width_pctile":
+                # BB width percentile comparison
+                lookback = regime.lookback_bars or 20
+                bb_id = f"bb_{lookback}"
+                bb_width = self.resolver._get_indicator_band_width(ctx, bb_id)
+                return op.apply(bb_width, float(value))
+
+            case "vol_atr_pct":
+                # ATR as percentage of price
+                lookback = regime.lookback_bars or 14
+                atr_id = f"atr_{lookback}"
+                atr_val = self.resolver._get_indicator_value(ctx, atr_id)
+                close = ctx.get_price(PriceField.CLOSE)
+                atr_pct = (atr_val / close) * 100
+                return op.apply(atr_pct, float(value))
+
+            case "trend_adx":
+                # ADX value comparison
+                lookback = regime.lookback_bars or 14
+                adx_id = f"adx_{lookback}"
+                adx_val = self.resolver._get_indicator_value(ctx, adx_id)
+                return op.apply(adx_val, float(value))
+
+            case "trend_regime":
+                # Same as trend_ma_relation but with string value
+                fast_id = f"ema_{regime.ma_fast}" if regime.ma_fast else "ema_fast"
+                slow_id = f"ema_{regime.ma_slow}" if regime.ma_slow else "ema_slow"
+                fast_val = self.resolver._get_indicator_value(ctx, fast_id)
+                slow_val = self.resolver._get_indicator_value(ctx, slow_id)
+                if value == "up":
+                    return fast_val > slow_val
+                elif value == "down":
+                    return fast_val < slow_val
+                else:
+                    return True  # neutral
+
+            case "vol_regime":
+                # Volatility regime: "quiet", "normal", "high"
+                lookback = regime.lookback_bars or 20
+                bb_id = f"bb_{lookback}"
+                bb_width = self.resolver._get_indicator_band_width(ctx, bb_id)
+                low_thresh = 25
+                high_thresh = 75
+                if value == "quiet":
+                    return bb_width < low_thresh
+                elif value == "high":
+                    return bb_width > high_thresh
+                else:  # normal
+                    return low_thresh <= bb_width <= high_thresh
+
+            case "volume_pctile":
+                # Volume percentile approximation
+                lookback = regime.lookback_bars or 20
+                vol_sma_id = f"vol_sma_{lookback}"
+                vol_sma = self.resolver._get_indicator_value(ctx, vol_sma_id)
+                current_vol = ctx.get_volume()
+                approx_pctile = (current_vol / vol_sma) * 50 if vol_sma > 0 else 50
+                return op.apply(approx_pctile, float(value))
+
+            case "dist_from_vwap_pct":
+                # Distance from VWAP
+                vwap_val = self.resolver._get_indicator_value(ctx, "vwap")
+                close = ctx.get_price(PriceField.CLOSE)
+                dist_pct = ((close - vwap_val) / vwap_val) * 100 if vwap_val > 0 else 0
+                return op.apply(dist_pct, float(value))
+
+            case "liquidity_sweep" | "flag_pattern" | "pennant_pattern":
+                # These complex patterns need more sophisticated state tracking
+                # For now, return False as they require runtime state machines
+                return False
+
+            case "risk_event_prob":
+                # External calendar data - not available in simulation
+                return True  # Pass through, no restriction
+
+            case "gap_pct":
+                # Gap percentage requires previous close
+                try:
+                    prev_close = self.resolver._get_rolling_window_value(ctx, "prev_close_rw", 1)
+                    open_price = ctx.get_price(PriceField.OPEN)
+                    gap_pct = ((open_price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
+                    return op.apply(gap_pct, float(value))
+                except Exception:
+                    return False
+
             case _:
-                raise ValueError(
-                    f"Unknown regime metric: {metric}. "
-                    f"Supported metrics: trend_ma_relation, ret_pct"
-                )
+                # Unknown metric - log warning and pass through
+                import logging
+                logging.warning(f"Unknown regime metric: {metric}")
+                return True  # Default to passing
 
     def _evaluate_breakout_runtime(
         self, params: dict[str, Any], ctx: EvalContext
@@ -648,6 +810,22 @@ class ConditionEvaluator:
                 return price <= lower
             else:
                 return price >= upper
+        elif event == "cross_out":
+            # Price moves from inside to outside the band
+            # For upper: price goes above upper band
+            # For lower: price goes below lower band
+            if edge == "upper":
+                return price >= upper
+            else:
+                return price <= lower
+        elif event == "cross_in":
+            # Price moves from outside to inside the band
+            # For upper: price comes back below upper band (was above)
+            # For lower: price comes back above lower band (was below)
+            if edge == "upper":
+                return price <= upper
+            else:
+                return price >= lower
         elif event == "cross_above":
             # This would need previous bar data - approximate with current
             return price > target

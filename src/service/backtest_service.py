@@ -1,9 +1,16 @@
 """Backtest service - orchestrates strategy backtesting.
 
 This service:
-1. Translates strategy to IR
-2. Calls the backtest container endpoint (local Docker or Cloud Run)
-3. Returns results
+1. Fetches market data via DataService
+2. Translates strategy to IR
+3. Calls the backtest container endpoint (local Docker or Cloud Run) with data
+4. Returns structured results
+
+Data Flow:
+    Execution: DataService.get_ohlcv() → fetches from BigQuery
+    Execution: IRTranslator(strategy, cards).translate() → StrategyIR
+    Execution: HTTP POST to LEAN container with strategy_ir + data (inline or GCS)
+    LEAN: Deserialize, execute, return LEANBacktestResponse
 """
 
 import logging
@@ -14,7 +21,15 @@ from typing import Any
 
 import httpx
 
+from src.models.lean_backtest import (
+    BacktestConfig,
+    BacktestDataInput,
+    LEANBacktestRequest,
+    LEANBacktestResponse,
+)
+from src.service.data_service import DataService
 from src.translator.ir_translator import IRTranslator
+from vibe_trade_shared.models.data import OHLCVBar
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +40,9 @@ CLOUD_RUN_BACKTEST_URL = os.environ.get(
     "https://vibe-trade-backtest-833596808881.us-central1.run.app/backtest",
 )
 
+# Threshold for using inline vs GCS data
+INLINE_DATA_THRESHOLD = 10000  # Use inline if fewer bars
+
 
 @dataclass
 class BacktestRequest:
@@ -34,6 +52,7 @@ class BacktestRequest:
     start_date: datetime
     end_date: datetime
     symbol: str = "BTC-USD"
+    resolution: str = "1h"
     initial_cash: float = 100000.0
 
 
@@ -49,13 +68,22 @@ class BacktestResult:
     results: dict[str, Any] | None = None
     algorithm_code: str | None = None
     error: str | None = None
+    response: LEANBacktestResponse | None = None
 
 
 class BacktestService:
-    """Service for running strategy backtests via HTTP endpoint."""
+    """Service for running strategy backtests via HTTP endpoint.
+
+    Orchestrates the full backtest flow:
+    1. Fetch data via DataService (BQ or mock)
+    2. Translate strategy to IR
+    3. Call LEAN container with data
+    4. Return structured results
+    """
 
     def __init__(
         self,
+        data_service: DataService | None = None,
         backtest_url: str | None = None,
         use_local: bool = False,
         auth_token: str | None = None,
@@ -63,10 +91,13 @@ class BacktestService:
         """Initialize backtest service.
 
         Args:
+            data_service: Service for fetching market data. Required for fetching data.
             backtest_url: URL of the backtest service endpoint
             use_local: If True, use local Docker endpoint (localhost:8081)
             auth_token: Bearer token for Cloud Run authentication
         """
+        self.data_service = data_service
+
         if backtest_url:
             self.backtest_url = backtest_url
         elif use_local:
@@ -81,13 +112,17 @@ class BacktestService:
         request: BacktestRequest,
         strategy: Any,  # Strategy from vibe-trade-shared
         cards: dict[str, Any],  # Cards from vibe-trade-shared (card_id -> Card)
+        inline_bars: list[OHLCVBar] | None = None,
+        strategy_ir: Any | None = None,  # Pre-built StrategyIR (for testing)
     ) -> BacktestResult:
         """Run a backtest for a strategy.
 
         Args:
             request: Backtest request parameters
-            strategy: Strategy model
-            cards: Dict mapping card_id to Card objects
+            strategy: Strategy model (ignored if strategy_ir provided)
+            cards: Dict mapping card_id to Card objects (ignored if strategy_ir provided)
+            inline_bars: Optional pre-fetched bars (for testing). If None, fetches via DataService.
+            strategy_ir: Optional pre-built StrategyIR (for testing). If None, translates from strategy.
 
         Returns:
             BacktestResult with status and results
@@ -95,10 +130,13 @@ class BacktestService:
         try:
             logger.info(f"Starting backtest for strategy {request.strategy_id}")
 
-            # Step 1: Translate strategy to IR
-            logger.info("Translating strategy to IR...")
-            translator = IRTranslator(strategy, cards)
-            strategy_ir = translator.translate()
+            # Step 1: Get or translate strategy IR
+            if strategy_ir is not None:
+                logger.info("Using provided strategy IR")
+            else:
+                logger.info("Translating strategy to IR...")
+                translator = IRTranslator(strategy, cards)
+                strategy_ir = translator.translate()
 
             if not strategy_ir:
                 return BacktestResult(
@@ -109,48 +147,82 @@ class BacktestService:
                     error="Failed to translate strategy to IR",
                 )
 
-            # Step 2: Serialize IR to dict for HTTP request
-            ir_dict = strategy_ir.model_dump()
-            ir_json = strategy_ir.model_dump_json(indent=2)
-
-            # Step 3: Call backtest service endpoint
-            logger.info(f"Calling backtest service at {self.backtest_url}")
-            result = self._call_backtest_endpoint(
-                strategy_id=request.strategy_id,
-                strategy_ir=ir_dict,
-                symbol=request.symbol,
-                start_date=request.start_date,
-                end_date=request.end_date,
-                initial_cash=request.initial_cash,
-            )
-
-            if result.get("status") == "error" or result.get("error"):
+            # Step 2: Get market data
+            if inline_bars is not None:
+                # Use provided bars (tests)
+                bars = inline_bars
+                logger.info(f"Using {len(bars)} provided inline bars")
+            elif self.data_service is not None:
+                # Fetch from DataService (production)
+                logger.info(f"Fetching data from DataService for {request.symbol}...")
+                bars = self.data_service.get_ohlcv(
+                    symbol=request.symbol,
+                    resolution=request.resolution,
+                    start=request.start_date,
+                    end=request.end_date,
+                )
+                logger.info(f"Fetched {len(bars)} bars")
+            else:
                 return BacktestResult(
                     status="error",
                     strategy_id=request.strategy_id,
                     start_date=request.start_date,
                     end_date=request.end_date,
-                    error=result.get("error"),
-                    algorithm_code=ir_json,
+                    error="No data source: provide inline_bars or configure data_service",
                 )
 
-            # Extract summary from response
-            summary = result.get("summary", {})
+            # Step 3: Build LEAN request with inline data
+            # TODO: For large datasets, upload to GCS and use gcs_uri instead
+            ir_dict = strategy_ir.model_dump()
+            ir_json = strategy_ir.model_dump_json(indent=2)
+
+            lean_request = LEANBacktestRequest(
+                strategy_ir=ir_dict,
+                data=BacktestDataInput(
+                    symbol=request.symbol,
+                    resolution=request.resolution,
+                    bars=bars,
+                ),
+                config=BacktestConfig(
+                    start_date=request.start_date.date(),
+                    end_date=request.end_date.date(),
+                    initial_cash=request.initial_cash,
+                ),
+            )
+
+            # Step 4: Call LEAN container
+            logger.info(f"Calling LEAN at {self.backtest_url}")
+            response = self._call_lean_endpoint(lean_request)
+
+            if response.status == "error" or response.error:
+                return BacktestResult(
+                    status="error",
+                    strategy_id=request.strategy_id,
+                    start_date=request.start_date,
+                    end_date=request.end_date,
+                    error=response.error,
+                    algorithm_code=ir_json,
+                    response=response,
+                )
+
+            # Build results from response
+            summary = response.summary
+            results = {
+                "trades": [t.model_dump() for t in response.trades],
+                "summary": summary.model_dump() if summary else {},
+                "equity_curve": response.equity_curve,
+            }
 
             return BacktestResult(
                 status="success",
                 strategy_id=request.strategy_id,
                 start_date=request.start_date,
                 end_date=request.end_date,
-                results={
-                    "backtest_id": result.get("backtest_id"),
-                    "results_path": result.get("results_path"),
-                    "summary": summary,
-                    "duration_seconds": result.get("duration_seconds"),
-                },
+                results=results,
                 algorithm_code=ir_json,
-                message=f"Backtest completed: {summary.get('total_trades', 0)} trades, "
-                f"{summary.get('total_return_pct', 0):.2f}% return",
+                response=response,
+                message=f"Backtest completed: {summary.total_trades if summary else 0} trades, "
+                f"{summary.total_pnl_pct if summary else 0:.2f}% return",
             )
 
         except Exception as e:
@@ -163,37 +235,15 @@ class BacktestService:
                 error=str(e),
             )
 
-    def _call_backtest_endpoint(
-        self,
-        strategy_id: str,
-        strategy_ir: dict[str, Any],
-        symbol: str,
-        start_date: datetime,
-        end_date: datetime,
-        initial_cash: float,
-    ) -> dict[str, Any]:
-        """Call the backtest service HTTP endpoint.
+    def _call_lean_endpoint(self, request: LEANBacktestRequest) -> LEANBacktestResponse:
+        """Call LEAN HTTP endpoint with new request format.
 
         Args:
-            strategy_id: Strategy identifier
-            strategy_ir: Strategy IR as dict
-            symbol: Trading symbol
-            start_date: Backtest start date
-            end_date: Backtest end date
-            initial_cash: Initial capital
+            request: LEANBacktestRequest with strategy_ir, data, and config
 
         Returns:
-            Response from backtest service
+            LEANBacktestResponse with trades and summary
         """
-        payload = {
-            "strategy_id": strategy_id,
-            "strategy_ir": strategy_ir,
-            "symbol": symbol,
-            "start_date": start_date.strftime("%Y%m%d"),
-            "end_date": end_date.strftime("%Y%m%d"),
-            "initial_cash": initial_cash,
-        }
-
         headers = {"Content-Type": "application/json"}
         if self.auth_token:
             headers["Authorization"] = f"Bearer {self.auth_token}"
@@ -202,25 +252,26 @@ class BacktestService:
             with httpx.Client(timeout=600.0) as client:  # 10 minute timeout
                 response = client.post(
                     self.backtest_url,
-                    json=payload,
+                    content=request.model_dump_json(),
                     headers=headers,
                 )
 
                 if response.status_code != 200:
-                    return {
-                        "status": "error",
-                        "error": f"HTTP {response.status_code}: {response.text}",
-                    }
+                    return LEANBacktestResponse(
+                        status="error",
+                        error=f"HTTP {response.status_code}: {response.text}",
+                    )
 
-                return response.json()
+                return LEANBacktestResponse.model_validate(response.json())
 
         except httpx.TimeoutException:
-            return {
-                "status": "error",
-                "error": "Backtest request timed out after 10 minutes",
-            }
+            return LEANBacktestResponse(
+                status="error",
+                error="Backtest request timed out after 10 minutes",
+            )
         except Exception as e:
-            return {
-                "status": "error",
-                "error": f"Failed to call backtest service: {e}",
-            }
+            return LEANBacktestResponse(
+                status="error",
+                error=f"Failed to call LEAN service: {e}",
+            )
+

@@ -1323,6 +1323,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "vibe-trade-lean" },
 ]
 
 [package.metadata]
@@ -1337,7 +1338,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "uvicorn", specifier = ">=0.27.0" },
-    { name = "vibe-trade-shared", directory = "../vibe-trade-shared" },
+    { name = "vibe-trade-shared", editable = "../vibe-trade-shared" },
 ]
 
 [package.metadata.requires-dev]
@@ -1345,12 +1346,38 @@ dev = [
     { name = "pytest", specifier = ">=9.0.1" },
     { name = "pytest-cov", specifier = ">=5.0.0" },
     { name = "ruff", specifier = ">=0.6.0" },
+    { name = "vibe-trade-lean", editable = "../vibe-trade-lean" },
+]
+
+[[package]]
+name = "vibe-trade-lean"
+version = "0.1.0"
+source = { editable = "../vibe-trade-lean" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "pydantic" },
+    { name = "uvicorn" },
+    { name = "vibe-trade-shared" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.109.0" },
+    { name = "pydantic", specifier = ">=2.0.0" },
+    { name = "uvicorn", specifier = ">=0.27.0" },
+    { name = "vibe-trade-shared", editable = "../vibe-trade-shared" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "pytest", specifier = ">=9.0.1" },
 ]
 
 [[package]]
 name = "vibe-trade-shared"
 version = "0.1.2"
-source = { directory = "../vibe-trade-shared" }
+source = { editable = "../vibe-trade-shared" }
 dependencies = [
     { name = "google-cloud-firestore" },
     { name = "pydantic" },
