@@ -26,16 +26,9 @@ To run these tests:
 To skip E2E tests during development:
     uv run pytest -m "not e2e"
 
-Parallel execution (requires 4 LEAN containers):
-    cd vibe-trade-lean && docker compose -f docker-compose.parallel.yml up -d
-    pytest tests/e2e/ -n 4
-
-Performance:
-    - Single container: ~7 min (63 tests)
-    - 4 parallel containers: ~4 min (46% faster)
+Performance: ~7 seconds per test, ~7 minutes total for 63 tests.
 """
 
-import os
 from datetime import datetime, timezone
 
 import httpx
@@ -59,12 +52,16 @@ from vibe_trade_shared.models.ir import (
     AnyOfCondition,
     NotCondition,
     RegimeCondition,
+    SequenceCondition,
+    SequenceStep,
     IndicatorRef,
     IndicatorBandRef,
     IndicatorPropertyRef,
     PriceRef,
     LiteralRef,
     StateRef,
+    VolumeRef,
+    TimeRef,
     IRExpression,
     SetHoldingsAction,
     LiquidateAction,
@@ -138,72 +135,27 @@ def make_trending_bars(
 # =============================================================================
 
 
-# Available LEAN container ports
-LEAN_PORTS = [8081, 8082, 8083, 8084]
-
-
-def get_available_lean_ports() -> list[int]:
-    """Detect which LEAN containers are running (ports 8081-8084)."""
-    available = []
-    for port in LEAN_PORTS:
-        try:
-            response = httpx.get(f"http://localhost:{port}/health", timeout=2.0)
-            if response.status_code == 200:
-                available.append(port)
-        except (httpx.ConnectError, httpx.TimeoutException):
-            pass
-    return available
-
-
 def is_lean_available() -> bool:
-    """Check if at least one LEAN HTTP endpoint is running."""
-    return len(get_available_lean_ports()) > 0
-
-
-def get_worker_lean_port() -> int:
-    """Get LEAN port for the current pytest-xdist worker.
-
-    When running with pytest-xdist (-n 4), each worker gets a dedicated
-    LEAN container to maximize parallel throughput:
-    - gw0 -> port 8081
-    - gw1 -> port 8082
-    - gw2 -> port 8083
-    - gw3 -> port 8084
-
-    When running without xdist, uses first available port.
-    """
-    # Check for pytest-xdist worker ID (e.g., "gw0", "gw1", etc.)
-    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "")
-
-    if worker_id.startswith("gw"):
-        # Extract worker number and map to port
-        worker_num = int(worker_id[2:])
-        port = LEAN_PORTS[worker_num % len(LEAN_PORTS)]
-        return port
-
-    # Not running with xdist, use first available port
-    available = get_available_lean_ports()
-    return available[0] if available else 8081
+    """Check if LEAN HTTP endpoint is running."""
+    try:
+        response = httpx.get("http://localhost:8081/health", timeout=2.0)
+        return response.status_code == 200
+    except (httpx.ConnectError, httpx.TimeoutException):
+        return False
 
 
 requires_lean = pytest.mark.skipif(
     not is_lean_available(),
-    reason="LEAN not running. Start with: cd vibe-trade-lean && docker run -p 8081:8080 lean-backtest-service",
+    reason="LEAN not running. Start with: docker run -d -p 8081:8080 lean-backtest-service",
 )
 
 
 @pytest.fixture
 def backtest_service():
-    """BacktestService configured for testing.
-
-    When running with pytest-xdist (-n 4) and multiple LEAN containers
-    (ports 8081-8084), each worker gets a dedicated container.
-    """
-    port = get_worker_lean_port()
-    url = f"http://localhost:{port}/backtest"
+    """BacktestService configured for testing."""
     return BacktestService(
         data_service=None,
-        backtest_url=url,
+        use_local=True,
     )
 
 
@@ -4199,3 +4151,414 @@ class TestMultipleExitRules:
         trades = result.response.trades
         assert len(trades) >= 1
         assert trades[0].exit_reason == "stop_loss", f"Expected stop_loss exit, got {trades[0].exit_reason}"
+
+
+# =============================================================================
+# VWAP Indicator Tests
+# =============================================================================
+
+
+@requires_lean
+class TestVWAP:
+    """Test VWAP indicator strategies."""
+
+    def test_vwap_above_entry(self, backtest_service):
+        """Entry when price is above VWAP.
+
+        Strategy: Enter when close > VWAP (bullish momentum)
+        VWAP is volume-weighted average price, resets daily.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-vwap-above",
+            strategy_name="VWAP Above Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[
+                IndicatorSpec(id="vwap", type="VWAP", period=0),  # period=0 for intraday VWAP
+            ],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=CompareCondition(
+                    left=PriceRef(field=PriceField.CLOSE),
+                    op=CompareOp.GT,
+                    right=IndicatorRef(indicator_id="vwap"),
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Rising prices with volume - VWAP will lag behind
+        # Price starts at 100, VWAP starts same, price rises faster than VWAP
+        bars = [
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + i * 60_000,
+                     o=100.0 + i * 0.5, h=101.0 + i * 0.5, l=99.0 + i * 0.5,
+                     c=100.0 + i * 0.5, v=1000.0 + i * 100)
+            for i in range(20)
+        ]
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-vwap-above",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected entry when price > VWAP"
+
+    def test_vwap_distance_percent(self, backtest_service):
+        """Entry when price is more than 2% above VWAP.
+
+        Strategy: Enter when close > VWAP * 1.02 (extended above VWAP)
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-vwap-distance",
+            strategy_name="VWAP Distance Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[
+                IndicatorSpec(id="vwap", type="VWAP", period=0),  # period=0 for intraday VWAP
+            ],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=CompareCondition(
+                    left=PriceRef(field=PriceField.CLOSE),
+                    op=CompareOp.GT,
+                    right=IRExpression(
+                        left=IndicatorRef(indicator_id="vwap"),
+                        op="*",
+                        right=LiteralRef(value=1.02),
+                    ),
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Strong uptrend - price rises well above VWAP
+        bars = [
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + i * 60_000,
+                     o=100.0 + i * 1.0, h=101.0 + i * 1.0, l=99.0 + i * 1.0,
+                     c=100.0 + i * 1.0, v=1000.0)
+            for i in range(25)
+        ]
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-vwap-distance",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected entry when price > VWAP * 1.02"
+
+
+# =============================================================================
+# Volume Tests
+# =============================================================================
+
+
+@requires_lean
+class TestVolumeConditions:
+    """Test volume-based conditions."""
+
+    def test_volume_spike(self, backtest_service):
+        """Entry on volume spike (current volume > 2x average).
+
+        Strategy: Enter when volume > 2 * SMA(volume, 10)
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-volume-spike",
+            strategy_name="Volume Spike Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[
+                IndicatorSpec(id="vol_sma", type="VOL_SMA", period=10),
+            ],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=CompareCondition(
+                    left=VolumeRef(),
+                    op=CompareOp.GT,
+                    right=IRExpression(
+                        left=IndicatorRef(indicator_id="vol_sma"),
+                        op="*",
+                        right=LiteralRef(value=2.0),
+                    ),
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Normal volume for 15 bars, then spike
+        normal_bars = [
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + i * 60_000,
+                     o=100.0, h=101.0, l=99.0, c=100.0, v=1000.0)
+            for i in range(15)
+        ]
+        # Volume spike bars (3x normal)
+        spike_bars = [
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + (15 + i) * 60_000,
+                     o=100.0, h=102.0, l=99.0, c=101.0, v=3000.0)
+            for i in range(5)
+        ]
+        bars = normal_bars + spike_bars
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-volume-spike",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected entry on volume spike"
+
+    def test_volume_threshold(self, backtest_service):
+        """Entry when volume exceeds absolute threshold.
+
+        Strategy: Simple volume > 2000 condition
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-volume-threshold",
+            strategy_name="Volume Threshold Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=CompareCondition(
+                    left=VolumeRef(),
+                    op=CompareOp.GT,
+                    right=LiteralRef(value=2000.0),
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Low volume, then high volume
+        bars = [
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + i * 60_000,
+                     o=100.0, h=101.0, l=99.0, c=100.0,
+                     v=1000.0 if i < 10 else 2500.0)
+            for i in range(15)
+        ]
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-volume-threshold",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected entry when volume > 2000"
+
+
+# =============================================================================
+# Sequence Condition Tests
+# =============================================================================
+
+
+@requires_lean
+class TestSequenceCondition:
+    """Test SequenceCondition for multi-step entry patterns."""
+
+    def test_two_step_sequence(self, backtest_service):
+        """Entry requires two conditions to be true in sequence.
+
+        Strategy: First close > 100, then within 5 bars close > 105
+        This tests the sequence/setup-trigger pattern.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-sequence",
+            strategy_name="Sequence Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=SequenceCondition(
+                    steps=[
+                        SequenceStep(
+                            condition=CompareCondition(
+                                left=PriceRef(field=PriceField.CLOSE),
+                                op=CompareOp.GT,
+                                right=LiteralRef(value=100.0),
+                            ),
+                            # First step doesn't need within_bars (it's the trigger)
+                        ),
+                        SequenceStep(
+                            condition=CompareCondition(
+                                left=PriceRef(field=PriceField.CLOSE),
+                                op=CompareOp.GT,
+                                right=LiteralRef(value=105.0),
+                            ),
+                            within_bars=5,  # Must occur within 5 bars of previous step
+                        ),
+                    ],
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Price pattern: below 100, then 101, then 106 (both conditions in sequence)
+        bars = make_bars([95, 96, 97, 98, 99, 101, 102, 103, 104, 106, 107, 108])
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-sequence",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected entry after sequence completes"
+
+
+# =============================================================================
+# Time Reference Tests
+# =============================================================================
+
+
+@requires_lean
+class TestTimeConditions:
+    """Test time-based conditions."""
+
+    def test_hour_filter(self, backtest_service):
+        """Entry only during specific hours.
+
+        Strategy: Enter when close > 100 AND hour >= 9
+        Note: Test data starts at midnight UTC, so we need bars at different hours.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-hour-filter",
+            strategy_name="Hour Filter Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=AllOfCondition(
+                    conditions=[
+                        CompareCondition(
+                            left=PriceRef(field=PriceField.CLOSE),
+                            op=CompareOp.GT,
+                            right=LiteralRef(value=100.0),
+                        ),
+                        CompareCondition(
+                            left=TimeRef(component="hour"),
+                            op=CompareOp.GTE,
+                            right=LiteralRef(value=9.0),
+                        ),
+                    ],
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Create bars at different hours
+        # Hours 0-8: price > 100 but hour filter blocks
+        # Hour 9+: price > 100 and hour filter passes
+        base_ts = DEFAULT_BASE_TIMESTAMP_MS  # 2024-01-01 00:00:00 UTC
+        bars = []
+        for hour in range(12):
+            # One bar per hour
+            ts = base_ts + hour * 3600 * 1000  # hour in ms
+            price = 101.0 if hour >= 0 else 99.0  # Always above 100
+            bars.append(OHLCVBar(t=ts, o=price, h=price+1, l=price-1, c=price, v=1000.0))
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-hour-filter",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, 12, tzinfo=timezone.utc),  # Half day
+                symbol="TESTUSD",
+                resolution="1h",  # Hourly resolution
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        # Entry should only happen at hour 9 or later
+        assert len(trades) >= 1, "Expected entry after hour 9"
