@@ -5399,3 +5399,236 @@ class TestRealisticBTCPatterns:
         )
 
         assert result.status == "success", f"Backtest failed: {result.error}"
+
+
+# =============================================================================
+# Multi-Symbol Strategy Tests
+# =============================================================================
+
+
+@requires_lean
+class TestMultiSymbolStrategies:
+    """Test multi-symbol/intermarket strategies."""
+
+    def test_two_symbol_ema_comparison(self, backtest_service):
+        """Entry when primary symbol EMA > secondary symbol EMA.
+
+        Strategy: Trade BTCUSD when BTC EMA(20) > ETH EMA(20)
+        This tests intermarket analysis / relative strength.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-multi-ema",
+            strategy_name="Multi-Symbol EMA Test",
+            symbol="BTCUSD",
+            resolution="Minute",
+            additional_symbols=["ETHUSD"],  # Subscribe to ETH data
+            indicators=[
+                # BTC indicator (primary symbol, no 'symbol' field needed)
+                IndicatorSpec(id="btc_ema", type="EMA", period=20),
+                # ETH indicator (uses 'symbol' field for cross-symbol)
+                IndicatorSpec(id="eth_ema", type="EMA", period=20, symbol="ETHUSD"),
+            ],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=CompareCondition(
+                    left=IndicatorRef(indicator_id="btc_ema"),
+                    op=CompareOp.GT,
+                    right=IndicatorRef(indicator_id="eth_ema"),
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # BTC prices: rising from 100 to higher values
+        btc_bars = [
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + i * 60_000,
+                     o=100.0 + i * 0.5, h=101.0 + i * 0.5, l=99.0 + i * 0.5,
+                     c=100.0 + i * 0.5, v=1000.0)
+            for i in range(30)
+        ]
+
+        # ETH prices: lower and flatter (so BTC EMA > ETH EMA)
+        eth_bars = [
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + i * 60_000,
+                     o=50.0 + i * 0.1, h=51.0 + i * 0.1, l=49.0 + i * 0.1,
+                     c=50.0 + i * 0.1, v=2000.0)
+            for i in range(30)
+        ]
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-multi-ema",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="BTCUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=btc_bars,
+            strategy_ir=strategy_ir,
+            additional_bars={"ETHUSD": eth_bars},
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected entry when BTC EMA > ETH EMA"
+
+    def test_relative_strength_entry(self, backtest_service):
+        """Entry when primary symbol is stronger than secondary.
+
+        Strategy: Trade when BTC price > ETH price * ratio
+        Tests cross-symbol price comparison.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-relative-strength",
+            strategy_name="Relative Strength Test",
+            symbol="BTCUSD",
+            resolution="Minute",
+            additional_symbols=["ETHUSD"],
+            indicators=[
+                IndicatorSpec(id="btc_sma", type="SMA", period=10),
+                IndicatorSpec(id="eth_sma", type="SMA", period=10, symbol="ETHUSD"),
+            ],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                # BTC SMA must be at least 2x ETH SMA (relative strength)
+                condition=CompareCondition(
+                    left=IndicatorRef(indicator_id="btc_sma"),
+                    op=CompareOp.GT,
+                    right=IRExpression(
+                        left=IndicatorRef(indicator_id="eth_sma"),
+                        op="*",
+                        right=LiteralRef(value=2.0),
+                    ),
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # BTC: starts at 100, rises to 115
+        btc_bars = [
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + i * 60_000,
+                     o=100.0 + i * 0.5, h=101.0 + i * 0.5, l=99.0 + i * 0.5,
+                     c=100.0 + i * 0.5, v=1000.0)
+            for i in range(30)
+        ]
+
+        # ETH: stays around 40-45 (so BTC > 2x ETH after warmup)
+        eth_bars = [
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + i * 60_000,
+                     o=40.0 + i * 0.1, h=41.0 + i * 0.1, l=39.0 + i * 0.1,
+                     c=40.0 + i * 0.1, v=2000.0)
+            for i in range(30)
+        ]
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-relative-strength",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="BTCUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=btc_bars,
+            strategy_ir=strategy_ir,
+            additional_bars={"ETHUSD": eth_bars},
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected entry when BTC > 2x ETH"
+
+    def test_correlation_divergence(self, backtest_service):
+        """Entry when correlated assets diverge.
+
+        Strategy: Trade when BTC rises but ETH falls (divergence)
+        Common for mean-reversion pairs trading.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-divergence",
+            strategy_name="Divergence Test",
+            symbol="BTCUSD",
+            resolution="Minute",
+            additional_symbols=["ETHUSD"],
+            indicators=[
+                IndicatorSpec(id="btc_ema", type="EMA", period=5),
+                IndicatorSpec(id="btc_ema_slow", type="EMA", period=20),
+                IndicatorSpec(id="eth_ema", type="EMA", period=5, symbol="ETHUSD"),
+                IndicatorSpec(id="eth_ema_slow", type="EMA", period=20, symbol="ETHUSD"),
+            ],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                # BTC trending up (fast > slow) AND ETH trending down (fast < slow)
+                condition=AllOfCondition(
+                    conditions=[
+                        CompareCondition(
+                            left=IndicatorRef(indicator_id="btc_ema"),
+                            op=CompareOp.GT,
+                            right=IndicatorRef(indicator_id="btc_ema_slow"),
+                        ),
+                        CompareCondition(
+                            left=IndicatorRef(indicator_id="eth_ema"),
+                            op=CompareOp.LT,
+                            right=IndicatorRef(indicator_id="eth_ema_slow"),
+                        ),
+                    ],
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # BTC: uptrend
+        btc_bars = [
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + i * 60_000,
+                     o=100.0 + i * 0.5, h=101.0 + i * 0.5, l=99.0 + i * 0.5,
+                     c=100.0 + i * 0.5, v=1000.0)
+            for i in range(40)
+        ]
+
+        # ETH: downtrend
+        eth_bars = [
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + i * 60_000,
+                     o=100.0 - i * 0.5, h=101.0 - i * 0.5, l=99.0 - i * 0.5,
+                     c=100.0 - i * 0.5, v=2000.0)
+            for i in range(40)
+        ]
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-divergence",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="BTCUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=btc_bars,
+            strategy_ir=strategy_ir,
+            additional_bars={"ETHUSD": eth_bars},
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected entry on BTC/ETH divergence"

@@ -58,6 +58,10 @@ class LEANBacktestRequest(BaseModel):
     strategy_ir: dict = Field(..., description="StrategyIR.model_dump()")
     data: BacktestDataInput
     config: BacktestConfig
+    additional_data: list[BacktestDataInput] = Field(
+        default_factory=list,
+        description="Additional symbol data for multi-symbol strategies",
+    )
 
 
 class Trade(BaseModel):

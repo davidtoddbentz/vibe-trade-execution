@@ -114,6 +114,7 @@ class BacktestService:
         cards: dict[str, Any],  # Cards from vibe-trade-shared (card_id -> Card)
         inline_bars: list[OHLCVBar] | None = None,
         strategy_ir: Any | None = None,  # Pre-built StrategyIR (for testing)
+        additional_bars: dict[str, list[OHLCVBar]] | None = None,  # For multi-symbol strategies
     ) -> BacktestResult:
         """Run a backtest for a strategy.
 
@@ -123,6 +124,7 @@ class BacktestService:
             cards: Dict mapping card_id to Card objects (ignored if strategy_ir provided)
             inline_bars: Optional pre-fetched bars (for testing). If None, fetches via DataService.
             strategy_ir: Optional pre-built StrategyIR (for testing). If None, translates from strategy.
+            additional_bars: Optional dict of symbol -> bars for multi-symbol strategies.
 
         Returns:
             BacktestResult with status and results
@@ -176,6 +178,19 @@ class BacktestService:
             ir_dict = strategy_ir.model_dump()
             ir_json = strategy_ir.model_dump_json(indent=2)
 
+            # Build additional data inputs for multi-symbol strategies
+            additional_data_inputs = []
+            if additional_bars:
+                for symbol, symbol_bars in additional_bars.items():
+                    additional_data_inputs.append(
+                        BacktestDataInput(
+                            symbol=symbol,
+                            resolution=request.resolution,
+                            bars=symbol_bars,
+                        )
+                    )
+                logger.info(f"Including {len(additional_data_inputs)} additional symbols")
+
             lean_request = LEANBacktestRequest(
                 strategy_ir=ir_dict,
                 data=BacktestDataInput(
@@ -188,6 +203,7 @@ class BacktestService:
                     end_date=request.end_date.date(),
                     initial_cash=request.initial_cash,
                 ),
+                additional_data=additional_data_inputs,
             )
 
             # Step 4: Call LEAN container
