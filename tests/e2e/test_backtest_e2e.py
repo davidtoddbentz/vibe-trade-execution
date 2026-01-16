@@ -152,11 +152,35 @@ requires_lean = pytest.mark.skipif(
 
 
 @pytest.fixture
-def backtest_service():
-    """BacktestService configured for testing."""
+def backtest_service(request):
+    """BacktestService configured for testing.
+
+    Supports parallel execution with pytest-xdist:
+    - Single worker: uses port 8081 (default)
+    - Multiple workers: distributes across ports 8081-8084
+
+    Usage:
+        # Sequential (single container)
+        pytest tests/e2e/ -v
+
+        # Parallel (4 containers on ports 8081-8084)
+        docker-compose -f vibe-trade-lean/docker-compose.parallel.yml up -d
+        pytest tests/e2e/ -n 4
+    """
+    # Check if running with pytest-xdist
+    worker_id = getattr(request.config, "workerinput", {}).get("workerid", "master")
+
+    if worker_id == "master":
+        # Single worker mode - use default port
+        port = 8081
+    else:
+        # Multi-worker mode - extract worker number (gw0, gw1, gw2, gw3)
+        worker_num = int(worker_id.replace("gw", ""))
+        port = 8081 + (worker_num % 4)  # Round-robin across 4 ports
+
     return BacktestService(
         data_service=None,
-        use_local=True,
+        backtest_url=f"http://localhost:{port}/backtest",
     )
 
 
