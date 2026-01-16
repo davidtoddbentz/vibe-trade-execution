@@ -26,9 +26,16 @@ To run these tests:
 To skip E2E tests during development:
     uv run pytest -m "not e2e"
 
-~7 seconds per test, ~7 minutes total for 63 tests.
+Parallel execution (requires 4 LEAN containers):
+    cd vibe-trade-lean && docker compose -f docker-compose.parallel.yml up -d
+    pytest tests/e2e/ -n 4
+
+Performance:
+    - Single container: ~7 min (63 tests)
+    - 4 parallel containers: ~4 min (46% faster)
 """
 
+import os
 from datetime import datetime, timezone
 
 import httpx
@@ -131,27 +138,72 @@ def make_trending_bars(
 # =============================================================================
 
 
+# Available LEAN container ports
+LEAN_PORTS = [8081, 8082, 8083, 8084]
+
+
+def get_available_lean_ports() -> list[int]:
+    """Detect which LEAN containers are running (ports 8081-8084)."""
+    available = []
+    for port in LEAN_PORTS:
+        try:
+            response = httpx.get(f"http://localhost:{port}/health", timeout=2.0)
+            if response.status_code == 200:
+                available.append(port)
+        except (httpx.ConnectError, httpx.TimeoutException):
+            pass
+    return available
+
+
 def is_lean_available() -> bool:
-    """Check if LEAN HTTP endpoint is running."""
-    try:
-        response = httpx.get("http://localhost:8081/health", timeout=2.0)
-        return response.status_code == 200
-    except (httpx.ConnectError, httpx.TimeoutException):
-        return False
+    """Check if at least one LEAN HTTP endpoint is running."""
+    return len(get_available_lean_ports()) > 0
+
+
+def get_worker_lean_port() -> int:
+    """Get LEAN port for the current pytest-xdist worker.
+
+    When running with pytest-xdist (-n 4), each worker gets a dedicated
+    LEAN container to maximize parallel throughput:
+    - gw0 -> port 8081
+    - gw1 -> port 8082
+    - gw2 -> port 8083
+    - gw3 -> port 8084
+
+    When running without xdist, uses first available port.
+    """
+    # Check for pytest-xdist worker ID (e.g., "gw0", "gw1", etc.)
+    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "")
+
+    if worker_id.startswith("gw"):
+        # Extract worker number and map to port
+        worker_num = int(worker_id[2:])
+        port = LEAN_PORTS[worker_num % len(LEAN_PORTS)]
+        return port
+
+    # Not running with xdist, use first available port
+    available = get_available_lean_ports()
+    return available[0] if available else 8081
 
 
 requires_lean = pytest.mark.skipif(
     not is_lean_available(),
-    reason="LEAN not running at localhost:8081. Start with: cd vibe-trade-lean && make run-api",
+    reason="LEAN not running. Start with: cd vibe-trade-lean && docker run -p 8081:8080 lean-backtest-service",
 )
 
 
 @pytest.fixture
 def backtest_service():
-    """BacktestService configured for testing."""
+    """BacktestService configured for testing.
+
+    When running with pytest-xdist (-n 4) and multiple LEAN containers
+    (ports 8081-8084), each worker gets a dedicated container.
+    """
+    port = get_worker_lean_port()
+    url = f"http://localhost:{port}/backtest"
     return BacktestService(
         data_service=None,
-        use_local=True,
+        backtest_url=url,
     )
 
 
