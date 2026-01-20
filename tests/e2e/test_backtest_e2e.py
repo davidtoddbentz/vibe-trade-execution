@@ -6452,11 +6452,7 @@ class TestSpreadCondition:
     """Test SpreadCondition for multi-symbol spread comparisons."""
 
     def test_spread_entry(self, backtest_service):
-        """Entry when spread between symbols meets threshold.
-
-        Note: Single-symbol test verifies handler exists; multi-symbol
-        requires additional data feeds.
-        """
+        """Entry when spread between symbols meets threshold."""
         strategy_ir = StrategyIR(
             strategy_id="test-spread",
             strategy_name="Spread Test",
@@ -6476,10 +6472,10 @@ class TestSpreadCondition:
                         ),
                         SpreadCondition(
                             symbol_a="TESTUSD",
-                            symbol_b="TESTUSD",  # Same symbol for test
-                            spread_type="ratio",
-                            op=CompareOp.GT,
-                            threshold=0.5,  # Always true for same symbol
+                            symbol_b="TESTUSD",
+                            calc_type="ratio",
+                            trigger_op="above",
+                            threshold=0.5,
                         ),
                     ]
                 ),
