@@ -6293,16 +6293,19 @@ class TestTrailingBreakoutCondition:
             strategy_name="Trailing Breakout Test",
             symbol="TESTUSD",
             resolution="Minute",
-            indicators=[],
+            indicators=[
+                IndicatorSpec(indicator_type="DC", params={"period": 5}),
+            ],
             state=[],
             gates=[],
             overlays=[],
             entry=EntryRule(
                 condition=TrailingBreakoutCondition(
-                    band_type="DC",  # Donchian Channel
-                    period=5,
-                    direction="above",
-                    edge="upper",
+                    band_type="donchian",
+                    band_length=5,
+                    update_rule="min",
+                    band_edge="upper",
+                    trigger_direction="above",
                 ),
                 action=SetHoldingsAction(allocation=0.95),
                 on_fill=[],
