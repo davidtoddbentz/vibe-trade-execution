@@ -24,13 +24,13 @@ from .ir import (
     EntryRule,
     ExitRule,
     Gap,
-    Gate,
+    GateRule,
     Indicator,
     KeltnerChannel,
     LiquidateAction,
     Maximum,
     Minimum,
-    Overlay,
+    OverlayRule,
     Percentile,
     RateOfChange,
     Resolution,
@@ -39,11 +39,12 @@ from .ir import (
     SetHoldingsAction,
     StateOp,
     StateType,
-    StateVar,
+    StateVarSpec,
     StrategyIR,
     VolumeSMA,
 )
 from .ir_validator import validate_ir
+from .regime_lowering import lower_regime_condition
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ class IRTranslator:
 
         # Track indicators to avoid duplicates
         self._indicators: dict[str, Indicator] = {}
-        self._state_vars: dict[str, StateVar] = {}
+        self._state_vars: dict[str, StateVarSpec] = {}
         self._on_bar_hooks: list[StateOp] = []
         self._on_bar_invested_ops: list[StateOp] = []
         self._additional_symbols: list[str] = []
@@ -154,6 +155,12 @@ class IRTranslator:
             condition_dict = ir_condition.model_dump()
             self._process_inline_indicators(condition_dict)
 
+            # Lower regime conditions to primitives
+            condition_dict = self._lower_regime_conditions(condition_dict)
+
+            # Process any new inline indicators introduced by lowering
+            self._process_inline_indicators(condition_dict)
+
             # Use TypeAdapter to validate the union type
             adapter = TypeAdapter(Condition)
             local_condition = adapter.validate_python(condition_dict)
@@ -205,6 +212,41 @@ class IRTranslator:
             result.append(adapter.validate_python(op_dict))
         return result
 
+    def _lower_regime_conditions(self, condition: dict) -> dict:
+        """Recursively lower RegimeConditions to primitives."""
+        if not isinstance(condition, dict):
+            return condition
+
+        cond_type = condition.get("type")
+
+        # Recursively process nested conditions
+        if cond_type == "allOf" and "conditions" in condition:
+            condition["conditions"] = [
+                self._lower_regime_conditions(c) for c in condition["conditions"]
+            ]
+        elif cond_type == "anyOf" and "conditions" in condition:
+            condition["conditions"] = [
+                self._lower_regime_conditions(c) for c in condition["conditions"]
+            ]
+        elif cond_type == "not" and "condition" in condition:
+            condition["condition"] = self._lower_regime_conditions(condition["condition"])
+        elif cond_type == "sequence" and "steps" in condition:
+            for step in condition["steps"]:
+                if "condition" in step:
+                    step["condition"] = self._lower_regime_conditions(step["condition"])
+
+        # Lower regime conditions
+        if cond_type == "regime":
+            from pydantic import TypeAdapter
+            from vibe_trade_shared.models.ir import RegimeCondition
+
+            adapter = TypeAdapter(RegimeCondition)
+            regime = adapter.validate_python(condition)
+            lowered = lower_regime_condition(regime)
+            return lowered.model_dump()
+
+        return condition
+
     def _process_inline_indicators(self, obj: dict[str, Any]) -> None:
         """Process a condition dict, converting inline IndicatorRefs to indicator_id references.
 
@@ -213,7 +255,6 @@ class IRTranslator:
         2. Creates corresponding Indicator objects and registers them
         3. Mutates the dict to use indicator_id references instead
         4. Removes shared library-specific fields that the local IR doesn't support
-        5. Converts RuntimeCondition.indicators_required from list[IndicatorRef] to list[str]
         """
         if not isinstance(obj, dict):
             return
@@ -360,64 +401,26 @@ class IRTranslator:
                     # Gap percentage needs rolling window to access previous close
                     self._add_indicator(RollingWindow(id="prev_close_rw", period=2))
 
-            # Handle RuntimeCondition - create indicators based on condition type
-            elif obj.get("type") == "runtime":
-                cond_type = obj.get("condition_type") or ""
-                params = obj.get("params") or {}
+            # Handle BreakoutCondition (typed) - create MAX/MIN indicators
+            elif obj.get("type") == "breakout":
+                lookback = obj.get("lookback_bars") or 50
+                self._add_indicator(Maximum(id=f"max_{lookback}", period=lookback))
+                self._add_indicator(Minimum(id=f"min_{lookback}", period=lookback))
 
-                # Band events need band indicators
-                if cond_type.startswith("band_"):
-                    band_type = params.get("band_type") or "bollinger"
-                    length = params.get("length") or 20
-                    mult = params.get("mult") or 2.0
+            # Handle SpreadCondition (typed) - add both symbols to subscription
+            elif obj.get("type") == "spread":
+                symbol_a = obj.get("symbol_a")
+                symbol_b = obj.get("symbol_b")
+                if symbol_a and symbol_a not in self._additional_symbols and symbol_a != self.symbol:
+                    self._additional_symbols.append(symbol_a)
+                if symbol_b and symbol_b not in self._additional_symbols and symbol_b != self.symbol:
+                    self._additional_symbols.append(symbol_b)
 
-                    if band_type == "bollinger":
-                        self._add_indicator(
-                            BollingerBands(id=f"bb_{length}", period=length, num_std_dev=mult)
-                        )
-                    elif band_type == "keltner":
-                        self._add_indicator(
-                            KeltnerChannel(id=f"kc_{length}", period=length, atr_mult=mult)
-                        )
-                    elif band_type == "donchian":
-                        self._add_indicator(DonchianChannel(id=f"dc_{length}", period=length))
-                    elif band_type == "vwap_band":
-                        # VWAP band uses anchored VWAP
-                        anchor = params.get("anchor") or "session"
-                        self._add_indicator(
-                            AnchoredVWAP(id="avwap", anchor=anchor, anchor_datetime=None)
-                        )
-
-                # Breakout needs Donchian channel
-                elif cond_type == "breakout":
-                    lookback = params.get("lookback_bars") or 50
-                    self._add_indicator(DonchianChannel(id=f"dc_{lookback}", period=lookback))
-
-                # Intermarket trigger needs additional symbol subscription
-                elif cond_type == "intermarket_trigger":
-                    leader_symbol = params.get("leader_symbol")
-                    if leader_symbol and leader_symbol not in self._additional_symbols:
-                        self._additional_symbols.append(leader_symbol)
-
-                # Handle indicators_required list
-                if "indicators_required" in obj:
-                    indicator_ids = []
-                    for ind_ref in obj["indicators_required"]:
-                        if isinstance(ind_ref, dict) and ind_ref.get("indicator_type"):
-                            ind_type = ind_ref["indicator_type"]
-                            ind_params = ind_ref.get("params") or {}
-                            ind_id = self._generate_indicator_id(ind_type, ind_params)
-
-                            # Create and register the indicator
-                            indicator = self._create_indicator_from_spec(ind_type, ind_id, ind_params)
-                            if indicator:
-                                self._add_indicator(indicator)
-
-                            indicator_ids.append(ind_id)
-                        elif isinstance(ind_ref, str):
-                            # Already a string ID
-                            indicator_ids.append(ind_ref)
-                    obj["indicators_required"] = indicator_ids
+            # Handle IntermarketCondition (typed) - add leader symbol to subscription
+            elif obj.get("type") == "intermarket":
+                leader_symbol = obj.get("leader_symbol")
+                if leader_symbol and leader_symbol not in self._additional_symbols:
+                    self._additional_symbols.append(leader_symbol)
 
             # Recurse into nested dicts and lists
             for value in list(obj.values()):  # Use list() to avoid mutation during iteration
@@ -499,8 +502,8 @@ class IRTranslator:
         """
         entry: EntryRule | None = None
         exits: list[ExitRule] = []
-        gates: list[Gate] = []
-        overlays: list[Overlay] = []
+        gates: list[GateRule] = []
+        overlays: list[OverlayRule] = []
 
         # Process attachments by role
         for attachment in self.strategy.attachments:
@@ -626,7 +629,7 @@ class IRTranslator:
     # Gate Translation
     # =========================================================================
 
-    def _translate_gate(self, archetype: str, slots: dict[str, Any]) -> Gate | None:
+    def _translate_gate(self, archetype: str, slots: dict[str, Any]) -> GateRule | None:
         """Translate a gate card.
 
         Translation priority:
@@ -640,7 +643,7 @@ class IRTranslator:
             mode = action.get("mode", "allow")
             target_roles = action.get("target_roles", ["entry"])
 
-            return Gate(
+            return GateRule(
                 id=f"gate_{len(self._indicators)}",
                 condition=ir_condition,
                 mode=mode,
@@ -653,7 +656,7 @@ class IRTranslator:
     # Overlay Translation
     # =========================================================================
 
-    def _translate_overlay(self, archetype: str, slots: dict[str, Any]) -> Overlay | None:
+    def _translate_overlay(self, archetype: str, slots: dict[str, Any]) -> OverlayRule | None:
         """Translate an overlay card.
 
         Translation priority:
@@ -674,7 +677,7 @@ class IRTranslator:
             target_tags = action.get("target_tags", [])
             target_ids = action.get("target_ids", [])
 
-            return Overlay(
+            return OverlayRule(
                 id=f"overlay_{len(self._indicators)}",
                 condition=ir_condition,
                 scale_risk_frac=scale_risk_frac,
@@ -698,7 +701,7 @@ class IRTranslator:
     def _add_state(self, state_id: str, var_type: StateType, default: Any) -> None:
         """Add a state variable, avoiding duplicates."""
         if state_id not in self._state_vars:
-            self._state_vars[state_id] = StateVar(
+            self._state_vars[state_id] = StateVarSpec(
                 id=state_id,
                 var_type=var_type,
                 default=default,

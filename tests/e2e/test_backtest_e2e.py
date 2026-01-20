@@ -6234,7 +6234,7 @@ class TestSqueezeCondition:
     """Test SqueezeCondition for volatility squeeze detection."""
 
     def test_squeeze_entry(self, backtest_service):
-        """Entry when BB is inside KC (squeeze condition)."""
+        """Entry when BB width percentile is below threshold (squeeze)."""
         strategy_ir = StrategyIR(
             strategy_id="test-squeeze",
             strategy_name="Squeeze Test",
@@ -6249,10 +6249,10 @@ class TestSqueezeCondition:
             overlays=[],
             entry=EntryRule(
                 condition=SqueezeCondition(
-                    bb_period=5,
-                    bb_k=2.0,
-                    kc_period=5,
-                    kc_multiplier=1.5,
+                    squeeze_metric="bb_width_pctile",
+                    pctile_threshold=20.0,
+                    break_rule="donchian",
+                    with_trend=False,
                 ),
                 action=SetHoldingsAction(allocation=0.95),
                 on_fill=[],
@@ -6340,7 +6340,7 @@ class TestTrailingStateCondition:
     """Test TrailingStateCondition for price tracking with ATR offset."""
 
     def test_trailing_state_entry(self, backtest_service):
-        """Entry when price is above trailing anchor + ATR offset."""
+        """Entry when price drops below trailing high minus ATR offset."""
         strategy_ir = StrategyIR(
             strategy_id="test-trailing-state",
             strategy_name="Trailing State Test",
@@ -6349,15 +6349,20 @@ class TestTrailingStateCondition:
             indicators=[
                 IndicatorSpec(indicator_type="ATR", params={"period": 5}),
             ],
-            state=[],
+            state=[
+                StateVarSpec(id="trailing_high", var_type="float", default=0.0),
+            ],
             gates=[],
             overlays=[],
             entry=EntryRule(
                 condition=TrailingStateCondition(
-                    anchor="highest_high",
-                    lookback=5,
-                    atr_multiplier=1.0,
-                    direction="below",  # Price below highest high - ATR
+                    state_id="trailing_high",
+                    update_rule="max",
+                    update_price="high",
+                    trigger_op="below",
+                    trigger_price="close",
+                    atr_period=5,
+                    atr_mult=1.0,
                 ),
                 action=SetHoldingsAction(allocation=0.95),
                 on_fill=[],
@@ -6367,7 +6372,7 @@ class TestTrailingStateCondition:
             on_bar_invested=[],
         )
 
-        # Price trends then pulls back
+        # Price trends up then pulls back
         bars = make_bars([100, 105, 110, 115, 120, 115, 110, 105, 100, 95])
 
         result = backtest_service.run_backtest(
@@ -6392,10 +6397,7 @@ class TestEventWindowCondition:
     """Test EventWindowCondition for time-based event windows."""
 
     def test_event_window_entry(self, backtest_service):
-        """Entry within event window (e.g., earnings, FOMC).
-
-        Note: Without actual event calendar, this tests the handler exists.
-        """
+        """Entry within event window (e.g., earnings, FOMC)."""
         strategy_ir = StrategyIR(
             strategy_id="test-event-window",
             strategy_name="Event Window Test",
@@ -6414,9 +6416,10 @@ class TestEventWindowCondition:
                             right=LiteralRef(value=100.0),
                         ),
                         EventWindowCondition(
-                            event_type="earnings",
-                            window_hours_before=24,
-                            window_hours_after=24,
+                            event_types=["earnings"],
+                            pre_window_bars=24,
+                            post_window_bars=24,
+                            mode="within",
                         ),
                     ]
                 ),
@@ -6511,18 +6514,13 @@ class TestIntermarketCondition:
     """Test IntermarketCondition for leader/follower signals."""
 
     def test_intermarket_entry(self, backtest_service):
-        """Entry when leader symbol triggers follower signal.
-
-        Note: Single-symbol test verifies handler exists.
-        """
+        """Entry when leader symbol triggers follower signal."""
         strategy_ir = StrategyIR(
             strategy_id="test-intermarket",
             strategy_name="Intermarket Test",
             symbol="TESTUSD",
             resolution="Minute",
-            indicators=[
-                IndicatorSpec(indicator_type="EMA", params={"period": 5}),
-            ],
+            indicators=[],
             state=[],
             gates=[],
             overlays=[],
@@ -6536,12 +6534,11 @@ class TestIntermarketCondition:
                         ),
                         IntermarketCondition(
                             leader_symbol="TESTUSD",
-                            leader_condition=CompareCondition(
-                                left=PriceRef(field=PriceField.CLOSE),
-                                op=CompareOp.GT,
-                                right=IndicatorRef(indicator_type="EMA", params={"period": 5}),
-                            ),
-                            lag_bars=0,
+                            follower_symbol="TESTUSD",
+                            trigger_feature="ret_pct",
+                            trigger_threshold=1.0,
+                            window_bars=5,
+                            direction="same",
                         ),
                     ]
                 ),
@@ -6553,7 +6550,7 @@ class TestIntermarketCondition:
             on_bar_invested=[],
         )
 
-        # Trending up - close > EMA
+        # Trending up
         bars = make_bars([90, 92, 94, 96, 98, 100, 102, 104, 106, 108])
 
         result = backtest_service.run_backtest(
@@ -6597,19 +6594,13 @@ class TestMultiLeaderIntermarketCondition:
                             right=LiteralRef(value=100.0),
                         ),
                         MultiLeaderIntermarketCondition(
-                            leaders=[
-                                IntermarketCondition(
-                                    leader_symbol="TESTUSD",
-                                    leader_condition=CompareCondition(
-                                        left=PriceRef(field=PriceField.CLOSE),
-                                        op=CompareOp.GT,
-                                        right=LiteralRef(value=100.0),
-                                    ),
-                                    lag_bars=0,
-                                ),
-                            ],
-                            aggregation="any",
-                            threshold=1,
+                            leader_symbols=["TESTUSD"],
+                            follower_symbol="TESTUSD",
+                            aggregate_feature="ret_pct",
+                            aggregate_op="avg",
+                            trigger_threshold=1.0,
+                            window_bars=5,
+                            direction="same",
                         ),
                     ]
                 ),
@@ -6794,10 +6785,7 @@ class TestTimeFilterCondition:
     """Test TimeFilterCondition for time-based filtering."""
 
     def test_time_filter_entry(self, backtest_service):
-        """Entry only when within time window.
-
-        TimeFilterCondition is for hour/minute filtering.
-        """
+        """Entry only when within time window."""
         strategy_ir = StrategyIR(
             strategy_id="test-time-filter",
             strategy_name="Time Filter Test",
@@ -6816,9 +6804,9 @@ class TestTimeFilterCondition:
                             right=LiteralRef(value=100.0),
                         ),
                         TimeFilterCondition(
-                            start_hour=0,
-                            end_hour=23,  # All day allowed
-                            days_of_week=["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
+                            days_of_week=[0, 1, 2, 3, 4, 5, 6],  # All days
+                            time_window="00:00-23:59",
+                            timezone="UTC",
                         ),
                     ]
                 ),
