@@ -422,6 +422,30 @@ class IRTranslator:
                 if leader_symbol and leader_symbol not in self._additional_symbols:
                     self._additional_symbols.append(leader_symbol)
 
+            # Handle indicator_band references - create the band indicator if not exists
+            elif obj.get("type") == "indicator_band":
+                ind_id = obj.get("indicator_id", "")
+                # Parse the indicator ID to determine band type and period
+                # Format: "{band_type}_{period}" e.g., "bollinger_20", "keltner_20"
+                if ind_id and "_" in ind_id and ind_id not in self._indicators:
+                    parts = ind_id.rsplit("_", 1)
+                    if len(parts) == 2:
+                        band_type, period_str = parts
+                        try:
+                            period = int(period_str)
+                            if band_type == "bollinger":
+                                self._add_indicator(
+                                    BollingerBands(id=ind_id, period=period, num_std_dev=2.0)
+                                )
+                            elif band_type == "keltner":
+                                self._add_indicator(
+                                    KeltnerChannel(id=ind_id, period=period, multiplier=2.0)
+                                )
+                            elif band_type == "donchian":
+                                self._add_indicator(DonchianChannel(id=ind_id, period=period))
+                        except ValueError:
+                            pass  # Invalid period, skip
+
             # Recurse into nested dicts and lists
             for value in list(obj.values()):  # Use list() to avoid mutation during iteration
                 if isinstance(value, dict):
