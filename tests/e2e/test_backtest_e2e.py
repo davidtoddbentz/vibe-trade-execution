@@ -6190,8 +6190,8 @@ class TestBreakoutCondition:
             symbol="TESTUSD",
             resolution="Minute",
             indicators=[
-                IndicatorSpec(indicator_type="MAX", params={"period": 5}),
-                IndicatorSpec(indicator_type="MIN", params={"period": 5}),
+                IndicatorSpec(id="max_5", type="MAX", period=5),
+                IndicatorSpec(id="min_5", type="MIN", period=5),
             ],
             state=[],
             gates=[],
@@ -6241,8 +6241,8 @@ class TestSqueezeCondition:
             symbol="TESTUSD",
             resolution="Minute",
             indicators=[
-                IndicatorSpec(indicator_type="BB", params={"period": 5, "k": 2.0}),
-                IndicatorSpec(indicator_type="KC", params={"period": 5, "atr_period": 5, "multiplier": 1.5}),
+                IndicatorSpec(id="bb", type="BB", period=5, multiplier=2.0),
+                IndicatorSpec(id="kc", type="KC", period=5, multiplier=1.5),
             ],
             state=[],
             gates=[],
@@ -6294,7 +6294,7 @@ class TestTrailingBreakoutCondition:
             symbol="TESTUSD",
             resolution="Minute",
             indicators=[
-                IndicatorSpec(indicator_type="DC", params={"period": 5}),
+                IndicatorSpec(id="dc", type="DC", period=5),
             ],
             state=[],
             gates=[],
@@ -6347,7 +6347,7 @@ class TestTrailingStateCondition:
             symbol="TESTUSD",
             resolution="Minute",
             indicators=[
-                IndicatorSpec(indicator_type="ATR", params={"period": 5}),
+                IndicatorSpec(id="atr", type="ATR", period=5),
             ],
             state=[
                 StateVarSpec(id="trailing_high", var_type="float", default=0.0),
