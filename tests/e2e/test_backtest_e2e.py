@@ -37,22 +37,30 @@ from vibe_trade_shared.models.data import OHLCVBar
 from vibe_trade_shared.models.ir import (
     AllOfCondition,
     AnyOfCondition,
+    BreakoutCondition,
     CompareCondition,
     CompareOp,
     CrossCondition,
     EntryRule,
+    EventWindowCondition,
     ExitRule,
+    FlagPatternCondition,
+    GapCondition,
     GateRule,
     IncrementStateAction,
     IndicatorBandRef,
     IndicatorRef,
     IndicatorSpec,
+    IntermarketCondition,
     IRExpression,
     LiquidateAction,
+    LiquiditySweepCondition,
     LiteralRef,
     MaxStateAction,
+    MultiLeaderIntermarketCondition,
     NotCondition,
     OverlayRule,
+    PennantPatternCondition,
     PriceField,
     PriceRef,
     RegimeCondition,
@@ -60,10 +68,15 @@ from vibe_trade_shared.models.ir import (
     SequenceStep,
     SetHoldingsAction,
     SetStateAction,
+    SpreadCondition,
+    SqueezeCondition,
     StateRef,
     StateVarSpec,
     StrategyIR,
+    TimeFilterCondition,
     TimeRef,
+    TrailingBreakoutCondition,
+    TrailingStateCondition,
     VolumeRef,
 )
 
@@ -6100,3 +6113,741 @@ class TestTimeStops:
         # Entry at bar 2 (price 102), 10% target = 112.2
         # Max price is 111 (below 112.2), so time stop (10 bars) should win
         assert trades[0].exit_reason == "time_stop_10", f"Expected time_stop_10, got {trades[0].exit_reason}"
+
+
+# =============================================================================
+# Typed Condition E2E Tests - Handler Completeness
+# =============================================================================
+# These tests verify that typed conditions dispatch correctly to their handlers
+# in StrategyRuntime. If a handler is missing, LEAN will raise RuntimeError.
+
+
+@requires_lean
+class TestGapCondition:
+    """Test GapCondition for gap detection at session open."""
+
+    def test_gap_up_entry(self, backtest_service):
+        """Entry when session opens with gap up > threshold.
+
+        Note: GapCondition compares open vs previous close for gap percentage.
+        In real use this triggers at session open; here we simulate with bars.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-gap-up",
+            strategy_name="Gap Up Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=GapCondition(
+                    direction="up",
+                    min_gap_pct=2.0,  # Require 2%+ gap up
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Simulate gap: bar 4 opens at 103 vs bar 3 close at 100 = 3% gap up
+        bars = [
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS, o=95, h=96, l=94, c=95, v=1000),
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + 60000, o=96, h=97, l=95, c=96, v=1000),
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + 120000, o=98, h=99, l=97, c=100, v=1000),  # Close at 100
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + 180000, o=103, h=105, l=102, c=104, v=1000),  # Gap up 3%
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + 240000, o=105, h=106, l=104, c=105, v=1000),
+        ]
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-gap-up",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        # Test passes if LEAN doesn't crash - handler exists
+        assert result.status == "success", f"GapCondition failed: {result.error}"
+
+
+@requires_lean
+class TestBreakoutCondition:
+    """Test BreakoutCondition for N-bar high/low breakouts."""
+
+    def test_nbar_breakout_entry(self, backtest_service):
+        """Entry when price breaks above N-bar high."""
+        strategy_ir = StrategyIR(
+            strategy_id="test-nbar-breakout",
+            strategy_name="N-Bar Breakout Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[
+                IndicatorSpec(indicator_type="MAX", params={"period": 5}),
+                IndicatorSpec(indicator_type="MIN", params={"period": 5}),
+            ],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=BreakoutCondition(
+                    lookback_bars=5,
+                    buffer_bps=0,
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Price breaks above 5-bar high on bar 8
+        bars = make_bars([100, 99, 98, 97, 96, 95, 94, 93, 105, 106, 107])
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-nbar-breakout",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"BreakoutCondition failed: {result.error}"
+
+
+@requires_lean
+class TestSqueezeCondition:
+    """Test SqueezeCondition for volatility squeeze detection."""
+
+    def test_squeeze_entry(self, backtest_service):
+        """Entry when BB is inside KC (squeeze condition)."""
+        strategy_ir = StrategyIR(
+            strategy_id="test-squeeze",
+            strategy_name="Squeeze Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[
+                IndicatorSpec(indicator_type="BB", params={"period": 5, "k": 2.0}),
+                IndicatorSpec(indicator_type="KC", params={"period": 5, "atr_period": 5, "multiplier": 1.5}),
+            ],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=SqueezeCondition(
+                    bb_period=5,
+                    bb_k=2.0,
+                    kc_period=5,
+                    kc_multiplier=1.5,
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Low volatility period - squeeze likely
+        bars = make_bars([100, 100.1, 99.9, 100, 100.1, 99.9, 100, 100.2, 99.8, 100.1])
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-squeeze",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"SqueezeCondition failed: {result.error}"
+
+
+@requires_lean
+class TestTrailingBreakoutCondition:
+    """Test TrailingBreakoutCondition for trailing band breakouts."""
+
+    def test_trailing_breakout_entry(self, backtest_service):
+        """Entry when price breaks above trailing high band."""
+        strategy_ir = StrategyIR(
+            strategy_id="test-trailing-breakout",
+            strategy_name="Trailing Breakout Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=TrailingBreakoutCondition(
+                    band_type="DC",  # Donchian Channel
+                    period=5,
+                    direction="above",
+                    edge="upper",
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Price breaks above 5-bar high
+        bars = make_bars([100, 99, 98, 97, 96, 95, 102, 103, 104])
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-trailing-breakout",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"TrailingBreakoutCondition failed: {result.error}"
+
+
+@requires_lean
+class TestTrailingStateCondition:
+    """Test TrailingStateCondition for price tracking with ATR offset."""
+
+    def test_trailing_state_entry(self, backtest_service):
+        """Entry when price is above trailing anchor + ATR offset."""
+        strategy_ir = StrategyIR(
+            strategy_id="test-trailing-state",
+            strategy_name="Trailing State Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[
+                IndicatorSpec(indicator_type="ATR", params={"period": 5}),
+            ],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=TrailingStateCondition(
+                    anchor="highest_high",
+                    lookback=5,
+                    atr_multiplier=1.0,
+                    direction="below",  # Price below highest high - ATR
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Price trends then pulls back
+        bars = make_bars([100, 105, 110, 115, 120, 115, 110, 105, 100, 95])
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-trailing-state",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"TrailingStateCondition failed: {result.error}"
+
+
+@requires_lean
+class TestEventWindowCondition:
+    """Test EventWindowCondition for time-based event windows."""
+
+    def test_event_window_entry(self, backtest_service):
+        """Entry within event window (e.g., earnings, FOMC).
+
+        Note: Without actual event calendar, this tests the handler exists.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-event-window",
+            strategy_name="Event Window Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=AllOfCondition(
+                    conditions=[
+                        CompareCondition(
+                            left=PriceRef(field=PriceField.CLOSE),
+                            op=CompareOp.GT,
+                            right=LiteralRef(value=100.0),
+                        ),
+                        EventWindowCondition(
+                            event_type="earnings",
+                            window_hours_before=24,
+                            window_hours_after=24,
+                        ),
+                    ]
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        bars = make_bars([95, 96, 97, 98, 99, 101, 102, 103])
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-event-window",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"EventWindowCondition failed: {result.error}"
+
+
+@requires_lean
+class TestSpreadCondition:
+    """Test SpreadCondition for multi-symbol spread comparisons."""
+
+    def test_spread_entry(self, backtest_service):
+        """Entry when spread between symbols meets threshold.
+
+        Note: Single-symbol test verifies handler exists; multi-symbol
+        requires additional data feeds.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-spread",
+            strategy_name="Spread Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=AllOfCondition(
+                    conditions=[
+                        CompareCondition(
+                            left=PriceRef(field=PriceField.CLOSE),
+                            op=CompareOp.GT,
+                            right=LiteralRef(value=100.0),
+                        ),
+                        SpreadCondition(
+                            symbol_a="TESTUSD",
+                            symbol_b="TESTUSD",  # Same symbol for test
+                            spread_type="ratio",
+                            op=CompareOp.GT,
+                            threshold=0.5,  # Always true for same symbol
+                        ),
+                    ]
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        bars = make_bars([95, 96, 97, 98, 99, 101, 102, 103])
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-spread",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"SpreadCondition failed: {result.error}"
+
+
+@requires_lean
+class TestIntermarketCondition:
+    """Test IntermarketCondition for leader/follower signals."""
+
+    def test_intermarket_entry(self, backtest_service):
+        """Entry when leader symbol triggers follower signal.
+
+        Note: Single-symbol test verifies handler exists.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-intermarket",
+            strategy_name="Intermarket Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[
+                IndicatorSpec(indicator_type="EMA", params={"period": 5}),
+            ],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=AllOfCondition(
+                    conditions=[
+                        CompareCondition(
+                            left=PriceRef(field=PriceField.CLOSE),
+                            op=CompareOp.GT,
+                            right=LiteralRef(value=100.0),
+                        ),
+                        IntermarketCondition(
+                            leader_symbol="TESTUSD",
+                            leader_condition=CompareCondition(
+                                left=PriceRef(field=PriceField.CLOSE),
+                                op=CompareOp.GT,
+                                right=IndicatorRef(indicator_type="EMA", params={"period": 5}),
+                            ),
+                            lag_bars=0,
+                        ),
+                    ]
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Trending up - close > EMA
+        bars = make_bars([90, 92, 94, 96, 98, 100, 102, 104, 106, 108])
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-intermarket",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"IntermarketCondition failed: {result.error}"
+
+
+@requires_lean
+class TestMultiLeaderIntermarketCondition:
+    """Test MultiLeaderIntermarketCondition for aggregated leader signals."""
+
+    def test_multi_leader_entry(self, backtest_service):
+        """Entry when multiple leaders agree (aggregation threshold)."""
+        strategy_ir = StrategyIR(
+            strategy_id="test-multi-leader",
+            strategy_name="Multi Leader Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=AllOfCondition(
+                    conditions=[
+                        CompareCondition(
+                            left=PriceRef(field=PriceField.CLOSE),
+                            op=CompareOp.GT,
+                            right=LiteralRef(value=100.0),
+                        ),
+                        MultiLeaderIntermarketCondition(
+                            leaders=[
+                                IntermarketCondition(
+                                    leader_symbol="TESTUSD",
+                                    leader_condition=CompareCondition(
+                                        left=PriceRef(field=PriceField.CLOSE),
+                                        op=CompareOp.GT,
+                                        right=LiteralRef(value=100.0),
+                                    ),
+                                    lag_bars=0,
+                                ),
+                            ],
+                            aggregation="any",
+                            threshold=1,
+                        ),
+                    ]
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        bars = make_bars([95, 96, 97, 98, 99, 101, 102, 103])
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-multi-leader",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"MultiLeaderIntermarketCondition failed: {result.error}"
+
+
+@requires_lean
+class TestLiquiditySweepCondition:
+    """Test LiquiditySweepCondition for sweep pattern detection."""
+
+    def test_liquidity_sweep_entry(self, backtest_service):
+        """Entry when price sweeps below level then reclaims."""
+        strategy_ir = StrategyIR(
+            strategy_id="test-liquidity-sweep",
+            strategy_name="Liquidity Sweep Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=LiquiditySweepCondition(
+                    level_type="rolling_min",
+                    level_period=5,
+                    lookback_bars=3,
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Price sweeps below then reclaims
+        bars = make_bars([100, 99, 98, 97, 96, 94, 97, 98, 99, 100])
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-liquidity-sweep",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"LiquiditySweepCondition failed: {result.error}"
+
+
+@requires_lean
+class TestFlagPatternCondition:
+    """Test FlagPatternCondition for momentum + consolidation + breakout."""
+
+    def test_flag_pattern_entry(self, backtest_service):
+        """Entry on flag pattern: momentum, consolidation, breakout."""
+        strategy_ir = StrategyIR(
+            strategy_id="test-flag-pattern",
+            strategy_name="Flag Pattern Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=FlagPatternCondition(
+                    momentum_threshold=3.0,
+                    momentum_period=5,
+                    consolidation_bars=3,
+                    breakout_direction="same",
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Momentum up, consolidation, breakout
+        bars = make_bars([100, 102, 104, 106, 108, 108, 108, 109, 112, 115])
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-flag-pattern",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"FlagPatternCondition failed: {result.error}"
+
+
+@requires_lean
+class TestPennantPatternCondition:
+    """Test PennantPatternCondition for triangular consolidation."""
+
+    def test_pennant_pattern_entry(self, backtest_service):
+        """Entry on pennant pattern: momentum, converging trendlines, breakout."""
+        strategy_ir = StrategyIR(
+            strategy_id="test-pennant-pattern",
+            strategy_name="Pennant Pattern Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=PennantPatternCondition(
+                    momentum_threshold=3.0,
+                    momentum_period=5,
+                    consolidation_bars=3,
+                    breakout_direction="same",
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        # Momentum up, pennant consolidation (converging range), breakout
+        bars = make_bars([100, 102, 104, 106, 108, 107, 108, 107.5, 112, 115])
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-pennant-pattern",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"PennantPatternCondition failed: {result.error}"
+
+
+@requires_lean
+class TestTimeFilterCondition:
+    """Test TimeFilterCondition for time-based filtering."""
+
+    def test_time_filter_entry(self, backtest_service):
+        """Entry only when within time window.
+
+        TimeFilterCondition is for hour/minute filtering.
+        """
+        strategy_ir = StrategyIR(
+            strategy_id="test-time-filter",
+            strategy_name="Time Filter Test",
+            symbol="TESTUSD",
+            resolution="Minute",
+            indicators=[],
+            state=[],
+            gates=[],
+            overlays=[],
+            entry=EntryRule(
+                condition=AllOfCondition(
+                    conditions=[
+                        CompareCondition(
+                            left=PriceRef(field=PriceField.CLOSE),
+                            op=CompareOp.GT,
+                            right=LiteralRef(value=100.0),
+                        ),
+                        TimeFilterCondition(
+                            start_hour=0,
+                            end_hour=23,  # All day allowed
+                            days_of_week=["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
+                        ),
+                    ]
+                ),
+                action=SetHoldingsAction(allocation=0.95),
+                on_fill=[],
+            ),
+            exits=[],
+            on_bar=[],
+            on_bar_invested=[],
+        )
+
+        bars = make_bars([95, 96, 97, 98, 99, 101, 102, 103])
+
+        result = backtest_service.run_backtest(
+            request=BacktestRequest(
+                strategy_id="test-time-filter",
+                start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                symbol="TESTUSD",
+                resolution="1m",
+            ),
+            strategy=None,
+            cards={},
+            inline_bars=bars,
+            strategy_ir=strategy_ir,
+        )
+
+        assert result.status == "success", f"TimeFilterCondition failed: {result.error}"
