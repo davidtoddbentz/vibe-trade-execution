@@ -6127,11 +6127,7 @@ class TestGapCondition:
     """Test GapCondition for gap detection at session open."""
 
     def test_gap_up_entry(self, backtest_service):
-        """Entry when session opens with gap up > threshold.
-
-        Note: GapCondition compares open vs previous close for gap percentage.
-        In real use this triggers at session open; here we simulate with bars.
-        """
+        """Entry when session opens with gap up > threshold."""
         strategy_ir = StrategyIR(
             strategy_id="test-gap-up",
             strategy_name="Gap Up Test",
@@ -6143,8 +6139,10 @@ class TestGapCondition:
             overlays=[],
             entry=EntryRule(
                 condition=GapCondition(
-                    direction="up",
-                    min_gap_pct=2.0,  # Require 2%+ gap up
+                    session="us",
+                    mode="gap_go",
+                    min_gap_pct=2.0,
+                    direction="long",
                 ),
                 action=SetHoldingsAction(allocation=0.95),
                 on_fill=[],
@@ -6154,12 +6152,12 @@ class TestGapCondition:
             on_bar_invested=[],
         )
 
-        # Simulate gap: bar 4 opens at 103 vs bar 3 close at 100 = 3% gap up
+        # Simulate gap: bar 3 opens at 103 vs bar 2 close at 100 = 3% gap up
         bars = [
             OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS, o=95, h=96, l=94, c=95, v=1000),
             OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + 60000, o=96, h=97, l=95, c=96, v=1000),
-            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + 120000, o=98, h=99, l=97, c=100, v=1000),  # Close at 100
-            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + 180000, o=103, h=105, l=102, c=104, v=1000),  # Gap up 3%
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + 120000, o=98, h=99, l=97, c=100, v=1000),
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + 180000, o=103, h=105, l=102, c=104, v=1000),
             OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + 240000, o=105, h=106, l=104, c=105, v=1000),
         ]
 
@@ -6177,7 +6175,6 @@ class TestGapCondition:
             strategy_ir=strategy_ir,
         )
 
-        # Test passes if LEAN doesn't crash - handler exists
         assert result.status == "success", f"GapCondition failed: {result.error}"
 
 
