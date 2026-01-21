@@ -12,15 +12,23 @@ build/
 .venv/
 venv/
 .env
+.env.local
+.env.*.local
+.git/
+.gitignore
+.github/
 .idea/
 .vscode/
 *.log
 *.md
 tests/
+htmlcov/
+.coverage
+.pytest_cache/
+.ruff_cache/
 lean/Results/
 schema_bt/
-*.lock
 
-# For Dockerfile (execution service), ignore most of src except data module
+# Note: Keep uv.lock - needed for frozen installs
 # Note: Dockerfile.lean needs src/data/ and lean/Data/
 

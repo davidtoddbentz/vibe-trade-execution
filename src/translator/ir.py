@@ -5,11 +5,11 @@ and defines only execution-specific types locally.
 
 From shared library:
 - All enums (CompareOp, PriceField, BandField, StateType, IndicatorProperty)
-- All value references (IndicatorValue, PriceValue, StateValue, etc.)
+- All value references (IndicatorRef, PriceRef, StateRef, etc.)
 - All conditions (CompareCondition, AllOfCondition, RegimeCondition, etc.)
 - All actions (SetHoldingsAction, LiquidateAction, MarketOrderAction)
-- All state operations (SetStateOp, IncrementStateOp, etc.)
-- All rules (EntryRule, ExitRule, Gate, Overlay)
+- All state operations (SetStateAction, IncrementStateAction, etc.)
+- All rules (EntryRule, ExitRule, GateRule, OverlayRule)
 - StrategyIR
 
 Defined locally (LEAN-specific):
@@ -39,48 +39,53 @@ from vibe_trade_shared.models.ir import (  # noqa: F401
     CompareCondition,
     CompareOp,
     Condition,
+    CrossCondition,
+    CrossDirection,
+    EntryAction,
     # Rules
     EntryRule,
+    EventWindowCondition,
+    ExitAction,
     ExitRule,
-    # Value references
-    ExpressionValue,
-    Gate,
+    GateRule,
     # State operations
-    IncrementStateOp,
-    IndicatorBandValue,
+    IncrementStateAction,
+    # Value references
+    IndicatorBandRef,
     IndicatorProperty,
-    IndicatorPropertyValue,
-    IndicatorValue,
-    # Runtime conditions
-    IREventWindowCondition,
-    IRRuntimeCondition,
+    IndicatorPropertyRef,
+    IndicatorRef,
+    # Specs
+    IndicatorSpec,
+    IntermarketCondition,
+    IRExpression,
     LiquidateAction,
-    LiteralValue,
+    LiteralRef,
     MarketOrderAction,
-    MaxStateOp,
-    MinStateOp,
+    MaxStateAction,
+    MinStateAction,
     NotCondition,
-    Overlay,
+    OverlayRule,
     PriceField,
-    PriceValue,
+    PriceRef,
     RegimeCondition,
-    RollingWindowValue,
-    RuntimeCondition,
+    RollingWindowRef,
     SequenceCondition,
     SequenceStep,
     SetHoldingsAction,
-    SetStateFromConditionOp,
-    SetStateOp,
+    SetStateAction,
+    SetStateFromConditionAction,
+    SpreadCondition,
     SqueezeCondition,
+    StateCondition,
     StateOp,
+    StateRef,
     StateType,
-    StateValue,
-    # State variables
-    StateVar,
+    StateVarSpec,
     TimeFilterCondition,
-    TimeValue,
+    TimeRef,
     ValueRef,
-    VolumeValue,
+    VolumeRef,
 )
 
 # =============================================================================
@@ -143,6 +148,14 @@ class ATR(BaseModel):
     type: Literal["ATR"] = "ATR"
     id: str
     period: int
+
+
+class RSI(BaseModel):
+    """Relative Strength Index."""
+
+    type: Literal["RSI"] = "RSI"
+    id: str
+    period: int = 14
 
 
 class Maximum(BaseModel):
@@ -305,6 +318,7 @@ Indicator = Annotated[
     | BollingerBands
     | KeltnerChannel
     | ATR
+    | RSI
     | Maximum
     | Minimum
     | RateOfChange
@@ -348,13 +362,13 @@ class StrategyIR(BaseModel):
     indicators: list[Indicator] = Field(default_factory=list)
 
     # State variables to track
-    state: list[StateVar] = Field(default_factory=list)
+    state: list[StateVarSpec] = Field(default_factory=list)
 
     # Gates (evaluated before entry/exit)
-    gates: list[Gate] = Field(default_factory=list)
+    gates: list[GateRule] = Field(default_factory=list)
 
     # Overlays (scale risk/size based on conditions)
-    overlays: list[Overlay] = Field(default_factory=list)
+    overlays: list[OverlayRule] = Field(default_factory=list)
 
     # Entry rule
     entry: EntryRule | None = None
@@ -367,6 +381,20 @@ class StrategyIR(BaseModel):
 
     # Hooks called every bar when invested
     on_bar_invested: list[StateOp] = Field(default_factory=list)
+
+    # Trading costs (for backtest simulation)
+    fee_pct: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=5.0,
+        description="Trading fee as percentage of trade value (e.g., 0.1 = 0.1%)",
+    )
+    slippage_pct: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=5.0,
+        description="Slippage as percentage of price (e.g., 0.05 = 0.05%)",
+    )
 
     def to_json(self, indent: int = 2) -> str:
         """Serialize to JSON string."""

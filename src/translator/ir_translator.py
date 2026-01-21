@@ -14,6 +14,7 @@ from .ir import (
     ADX,
     ATR,
     EMA,
+    RSI,
     SMA,
     VWAP,
     AnchoredVWAP,
@@ -101,6 +102,69 @@ class IRTranslator:
         self._exit_counter = 0
         self._sequence_counter = 0
 
+    def _build_holdings_action(
+        self, action: dict[str, Any], direction: str
+    ) -> SetHoldingsAction:
+        """Build a SetHoldingsAction from action spec.
+
+        Converts SizingSpec to the appropriate holdings action.
+        Falls back to 0.95 (95%) if no sizing spec is provided.
+
+        For pct_equity: uses allocation field (0 to 1.0)
+        For fixed_usd: uses fixed_usd field, runtime computes quantity
+        For fixed_units: uses fixed_units field, runtime computes allocation
+
+        Direction determines the sign: long=positive, short=negative.
+
+        Args:
+            action: The action dict from the archetype slots
+            direction: "long" or "short"
+
+        Returns:
+            SetHoldingsAction configured for the sizing mode
+        """
+        sign = 1.0 if direction == "long" else -1.0
+        default_allocation = 0.95
+
+        sizing = action.get("sizing")
+        if not sizing:
+            return SetHoldingsAction(
+                sizing_mode="pct_equity", allocation=sign * default_allocation
+            )
+
+        sizing_type = sizing.get("type")
+
+        if sizing_type == "pct_equity":
+            # pct is 0-100, convert to 0-1
+            pct = sizing.get("pct", default_allocation * 100)
+            allocation = pct / 100.0
+            return SetHoldingsAction(
+                sizing_mode="pct_equity", allocation=sign * allocation
+            )
+
+        if sizing_type == "fixed_usd":
+            usd_amount = sizing.get("usd", 1000.0)
+            return SetHoldingsAction(
+                sizing_mode="fixed_usd",
+                allocation=0.0,  # Not used, but must be valid
+                fixed_usd=sign * usd_amount,
+            )
+
+        if sizing_type == "fixed_units":
+            units = sizing.get("units", 1.0)
+            return SetHoldingsAction(
+                sizing_mode="fixed_units",
+                allocation=0.0,  # Not used, but must be valid
+                fixed_units=sign * units,
+            )
+
+        # Unsupported sizing type - fall back to default
+        logger.warning(
+            f"Sizing type '{sizing_type}' not supported, using default 95% allocation"
+        )
+        return SetHoldingsAction(
+            sizing_mode="pct_equity", allocation=sign * default_allocation
+        )
 
     def _try_archetype_to_ir(self, archetype: str, slots: dict[str, Any]) -> Condition | None:
         """Try to get IR condition directly from archetype's to_ir() method.
@@ -486,6 +550,7 @@ class IRTranslator:
             ),
             "DC": lambda: DonchianChannel(id=ind_id, period=params.get("period", 20)),
             "ATR": lambda: ATR(id=ind_id, period=params.get("period", 14)),
+            "RSI": lambda: RSI(id=ind_id, period=params.get("period", 14)),
             "MAX": lambda: Maximum(id=ind_id, period=params.get("period", 50)),
             "MIN": lambda: Minimum(id=ind_id, period=params.get("period", 50)),
             "ROC": lambda: RateOfChange(id=ind_id, period=params.get("period", 14)),
@@ -615,11 +680,11 @@ class IRTranslator:
             condition, on_fill_ops, _, _ = result  # on_bar ops already registered
             action = slots.get("action", {})
             direction = action.get("direction", "long")
-            allocation = 0.95 if direction == "long" else -0.95
+            holdings_action = self._build_holdings_action(action, direction)
 
             return EntryRule(
                 condition=condition,
-                action=SetHoldingsAction(allocation=allocation),
+                action=holdings_action,
                 on_fill=on_fill_ops,  # From archetype.get_on_fill_ops()
             )
 

@@ -34,7 +34,7 @@ from src.translator.ir_translator import IRTranslator
 logger = logging.getLogger(__name__)
 
 # Default endpoints
-LOCAL_BACKTEST_URL = "http://localhost:8081/backtest"
+LOCAL_BACKTEST_URL = os.environ.get("LOCAL_BACKTEST_URL", "http://localhost:8083/backtest")
 CLOUD_RUN_BACKTEST_URL = os.environ.get(
     "BACKTEST_SERVICE_URL",
     "https://vibe-trade-backtest-833596808881.us-central1.run.app/backtest",
@@ -54,6 +54,8 @@ class BacktestRequest:
     symbol: str = "BTC-USD"
     resolution: str = "1h"
     initial_cash: float = 100000.0
+    fee_pct: float = 0.0  # Trading fee as percentage (e.g., 0.1 = 0.1%)
+    slippage_pct: float = 0.0  # Slippage as percentage (e.g., 0.05 = 0.05%)
 
 
 @dataclass
@@ -175,6 +177,16 @@ class BacktestService:
 
             # Step 3: Build LEAN request with inline data
             # TODO: For large datasets, upload to GCS and use gcs_uri instead
+
+            # Apply backtest-level trading costs to the IR
+            # Use model_copy to update immutable Pydantic model
+            strategy_ir = strategy_ir.model_copy(
+                update={
+                    "fee_pct": request.fee_pct,
+                    "slippage_pct": request.slippage_pct,
+                }
+            )
+
             ir_dict = strategy_ir.model_dump()
             ir_json = strategy_ir.model_dump_json(indent=2)
 
@@ -221,12 +233,73 @@ class BacktestService:
                     response=response,
                 )
 
-            # Build results from response
+            # Build results from response in format expected by UI
             summary = response.summary
+
+            # Transform trades to UI format
+            ui_trades = []
+            for i, t in enumerate(response.trades):
+                ui_trades.append({
+                    "trade_id": f"trade_{i}",
+                    "symbol": request.symbol,
+                    "direction": "buy" if t.direction == "long" else "sell",
+                    "entry_time": t.entry_time.isoformat() if t.entry_time else None,
+                    "entry_price": t.entry_price,
+                    "entry_quantity": t.quantity,
+                    "exit_time": t.exit_time.isoformat() if t.exit_time else None,
+                    "exit_price": t.exit_price,
+                    "pnl": t.pnl,
+                    "pnl_percent": t.pnl_pct,
+                    "exit_reason": t.exit_reason,
+                })
+
+            # Transform statistics to UI format
+            win_rate = (summary.winning_trades / summary.total_trades) if summary and summary.total_trades > 0 else 0
+            statistics = {
+                "total_return": summary.total_pnl_pct / 100 if summary else 0,  # UI expects decimal
+                "annual_return": 0,  # Would need more data to calculate
+                "sharpe_ratio": summary.sharpe_ratio if summary else None,
+                "max_drawdown": summary.max_drawdown_pct / 100 if summary else 0,  # UI expects decimal
+                "total_trades": summary.total_trades if summary else 0,
+                "winning_trades": summary.winning_trades if summary else 0,
+                "losing_trades": summary.losing_trades if summary else 0,
+                "win_rate": win_rate,
+                "net_profit": summary.total_pnl if summary else 0,
+                "average_win": 0,  # Would need to calculate
+                "average_loss": 0,  # Would need to calculate
+            } if summary else None
+
+            # Transform equity curve from flat list to EquityPoint format expected by UI
+            equity_curve_points = []
+            if response.equity_curve and len(response.equity_curve) > 0:
+                num_points = len(response.equity_curve)
+                # Generate timestamps evenly spaced between start and end dates
+                start_ts = request.start_date.timestamp()
+                end_ts = request.end_date.timestamp()
+                interval = (end_ts - start_ts) / max(num_points - 1, 1)
+
+                peak_equity = request.initial_cash
+                for i, equity in enumerate(response.equity_curve):
+                    timestamp = start_ts + (i * interval)
+                    time_str = datetime.fromtimestamp(timestamp).isoformat()
+
+                    # Track peak for drawdown calculation
+                    if equity > peak_equity:
+                        peak_equity = equity
+                    drawdown = (peak_equity - equity) / peak_equity if peak_equity > 0 else 0
+
+                    equity_curve_points.append({
+                        "time": time_str,
+                        "equity": equity,
+                        "cash": 0,  # Not tracked separately in LEAN response
+                        "holdings_value": equity,  # Approximate as total equity
+                        "drawdown": drawdown,
+                    })
+
             results = {
-                "trades": [t.model_dump() for t in response.trades],
-                "summary": summary.model_dump() if summary else {},
-                "equity_curve": response.equity_curve,
+                "trades": ui_trades,
+                "statistics": statistics,
+                "equity_curve": equity_curve_points,
             }
 
             return BacktestResult(

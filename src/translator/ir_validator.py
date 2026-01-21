@@ -12,14 +12,14 @@ from .ir import (
     AnyOfCondition,
     CompareCondition,
     Condition,
-    ExpressionValue,
-    IndicatorBandValue,
-    IndicatorPropertyValue,
-    IndicatorValue,
+    IndicatorBandRef,
+    IndicatorPropertyRef,
+    IndicatorRef,
+    IRExpression,
     NotCondition,
     RegimeCondition,
-    RollingWindowValue,
-    StateValue,
+    RollingWindowRef,
+    StateRef,
     StrategyIR,
 )
 
@@ -110,45 +110,45 @@ class IRValidator:
         if value is None:
             return
 
-        if isinstance(value, IndicatorValue):
+        if isinstance(value, IndicatorRef):
             if value.indicator_id not in self.indicator_ids:
                 self.result.add_error(
                     path,
                     f"References undefined indicator '{value.indicator_id}'. "
                     f"Defined indicators: {sorted(self.indicator_ids)}",
                 )
-        elif isinstance(value, IndicatorBandValue):
+        elif isinstance(value, IndicatorBandRef):
             if value.indicator_id not in self.indicator_ids:
                 self.result.add_error(
                     path,
                     f"References undefined indicator '{value.indicator_id}'. "
                     f"Defined indicators: {sorted(self.indicator_ids)}",
                 )
-        elif isinstance(value, IndicatorPropertyValue):
+        elif isinstance(value, IndicatorPropertyRef):
             if value.indicator_id not in self.indicator_ids:
                 self.result.add_error(
                     path,
                     f"References undefined indicator '{value.indicator_id}'. "
                     f"Defined indicators: {sorted(self.indicator_ids)}",
                 )
-        elif isinstance(value, StateValue):
+        elif isinstance(value, StateRef):
             if value.state_id not in self.state_ids:
                 self.result.add_error(
                     path,
                     f"References undefined state '{value.state_id}'. "
                     f"Defined states: {sorted(self.state_ids)}",
                 )
-        elif isinstance(value, ExpressionValue):
+        elif isinstance(value, IRExpression):
             self._validate_value(value.left, f"{path}.left")
             self._validate_value(value.right, f"{path}.right")
-        elif isinstance(value, RollingWindowValue):
+        elif isinstance(value, RollingWindowRef):
             if value.indicator_id not in self.indicator_ids:
                 self.result.add_error(
                     path,
                     f"References undefined indicator '{value.indicator_id}'. "
                     f"Defined indicators: {sorted(self.indicator_ids)}",
                 )
-        # PriceValue, VolumeValue, TimeValue, LiteralValue don't reference entities
+        # PriceRef, VolumeRef, TimeRef, LiteralRef don't reference entities
 
     def _validate_state_op(self, op, path: str) -> None:
         """Validate a state operation."""

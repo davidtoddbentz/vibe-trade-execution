@@ -67,11 +67,32 @@ jobs:
       env:
         GIT_AUTH_TOKEN: ${{ secrets.PAT_PRIVATE_REPOS }}
 
-    - name: Pull LEAN Docker image
-      run: docker pull quantconnect/lean:latest
+    - name: Cache LEAN Docker image
+      id: cache-lean
+      uses: actions/cache@v4
+      with:
+        path: /tmp/lean-image.tar
+        key: lean-docker-${{ hashFiles('**/Dockerfile*') }}
+        restore-keys: |
+          lean-docker-
+
+    - name: Load cached LEAN image or pull
+      run: |
+        if [ -f /tmp/lean-image.tar ]; then
+          echo "Loading cached LEAN image..."
+          docker load < /tmp/lean-image.tar
+        else
+          echo "Pulling LEAN image..."
+          docker pull quantconnect/lean:latest
+          docker save quantconnect/lean:latest > /tmp/lean-image.tar
+        fi
 
     - name: Run tests with coverage
       run: uv run pytest tests/ --cov=src --cov-report=term-missing --cov-report=xml --cov-fail-under=60 -v
+
+    - name: Clean up Docker
+      if: always()
+      run: docker system prune -f
 
     - name: Upload coverage artifacts
       uses: actions/upload-artifact@v4

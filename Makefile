@@ -22,13 +22,16 @@ locally: install lint-fix format
 	@echo "✅ Local setup complete!"
 
 # Run the FastAPI server locally (loads .env automatically)
+# NOTE: Use port 8082 to avoid conflict with API service on 8080
+# For full local stack, use `make execution-run` from repo root instead
 run:
 	@bash -c '\
 	if [ -f .env ]; then \
 		export $$(grep -v "^#" .env | xargs); \
 	fi; \
-	echo "🚀 Starting execution service on port 8080..."; \
-	uv run uvicorn src.main:app --host 0.0.0.0 --port 8080 --reload'
+	echo "🚀 Starting execution service on port 8082..."; \
+	echo "   (API service uses 8080, UI expects execution on 8082)"; \
+	uv run uvicorn src.main:app --host 0.0.0.0 --port 8082 --reload'
 
 # Run a backtest
 # Usage: make backtest CONFIG=examples/strategy_bundle.json CSV=path/to/data.csv [CASH=100000] [PLOT=1]

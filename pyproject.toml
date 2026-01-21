@@ -16,6 +16,7 @@ dependencies = [
     "fastavro>=1.9.0",
     "pydantic>=2.0.0",
     "vibe-trade-shared",
+    "google-cloud-bigquery>=3.40.0",
 ]
 authors = [
     {name = "Vibe Trade", email = "dev@vibe-trade.com"},
@@ -54,6 +55,7 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 markers = [
     "e2e: marks tests as end-to-end (requires LEAN container, deselect with '-m \"not e2e\"')",
+    "smoke: marks representative smoke tests for quick validation (~15 tests, ~2 min)",
 ]
 
 [tool.ruff]

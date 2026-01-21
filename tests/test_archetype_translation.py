@@ -416,3 +416,528 @@ class TestIndicatorRegistrationRegression:
         # Validation should pass - if it fails, indicators weren't registered
         result = validate_ir(ir)
         assert result.is_valid, f"IR validation failed: {result.errors}"
+
+
+class TestCompareConditionTranslation:
+    """Test compare condition translation through archetypes."""
+
+    def test_compare_condition_translates_correctly(self):
+        """Verify compare condition translates to IR CompareCondition."""
+        strategy = Strategy(
+            id="test",
+            name="Test Strategy",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                {"card_id": "entry", "role": "entry", "enabled": True, "overrides": {}},
+            ],
+        )
+        cards = {
+            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1",
+                id="entry",
+                type="entry.rule_trigger",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "compare",
+                            "compare": {
+                                "lhs": {"type": "price", "field": "close"},
+                                "op": ">",
+                                "rhs": 100.0,
+                            },
+                        }
+                    },
+                    "action": {"direction": "long"},
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        # Entry condition should be CompareCondition
+        assert ir.entry is not None
+        assert ir.entry.condition.type == "compare"
+        assert ir.entry.condition.left.type == "price"
+        assert ir.entry.condition.right.value == 100.0
+
+    def test_compare_with_allof_translates_correctly(self):
+        """Verify compare inside allOf translates correctly."""
+        strategy = Strategy(
+            id="test",
+            name="Test Strategy",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                {"card_id": "entry", "role": "entry", "enabled": True, "overrides": {}},
+            ],
+        )
+        cards = {
+            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1",
+                id="entry",
+                type="entry.rule_trigger",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "allOf",
+                            "allOf": [
+                                {
+                                    "type": "compare",
+                                    "compare": {
+                                        "lhs": {"type": "price", "field": "close"},
+                                        "op": ">",
+                                        "rhs": 100.0,
+                                    },
+                                },
+                                {
+                                    "type": "compare",
+                                    "compare": {
+                                        "lhs": {"type": "price", "field": "close"},
+                                        "op": "<",
+                                        "rhs": 200.0,
+                                    },
+                                },
+                            ],
+                        }
+                    },
+                    "action": {"direction": "long"},
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        # Entry condition should be AllOfCondition with two CompareConditions
+        assert ir.entry is not None
+        assert ir.entry.condition.type == "allOf"
+        assert len(ir.entry.condition.conditions) == 2
+        assert ir.entry.condition.conditions[0].type == "compare"
+        assert ir.entry.condition.conditions[1].type == "compare"
+
+
+class TestSizingSpecTranslation:
+    """Test that SizingSpec in EntryActionSpec is honored by translator.
+
+    SizingSpec allows users to specify position sizing:
+    - pct_equity: Allocate X% of portfolio equity
+    - fixed_usd: Allocate fixed USD amount
+    - fixed_units: Allocate fixed number of units
+    - pct_position: Size relative to current position
+
+    The translator was hardcoding 0.95 allocation regardless of sizing spec.
+    """
+
+    def test_pct_equity_sizing_translates_to_correct_allocation(self):
+        """Verify pct_equity sizing produces correct allocation.
+
+        sizing: {type: "pct_equity", pct: 5} should produce allocation=0.05
+        NOT the hardcoded 0.95.
+        """
+        strategy = Strategy(
+            id="test",
+            name="Test Strategy",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                {"card_id": "entry", "role": "entry", "enabled": True, "overrides": {}}
+            ],
+        )
+        cards = {
+            "entry": Card(
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                id="entry",
+                type="entry.rule_trigger",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "compare",
+                            "compare": {
+                                "lhs": {"type": "price", "field": "close"},
+                                "op": ">",
+                                "rhs": 100.0,
+                            },
+                        }
+                    },
+                    "action": {
+                        "direction": "long",
+                        "sizing": {"type": "pct_equity", "pct": 5},
+                    },
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        # Entry action should have allocation=0.05 (5% of equity)
+        assert ir.entry is not None
+        assert ir.entry.action.allocation == 0.05, (
+            f"Expected allocation=0.05 for 5% pct_equity, got {ir.entry.action.allocation}"
+        )
+
+    def test_pct_equity_sizing_short_direction(self):
+        """Verify pct_equity sizing with short direction produces negative allocation.
+
+        sizing: {type: "pct_equity", pct: 10} with direction="short"
+        should produce allocation=-0.10
+        """
+        strategy = Strategy(
+            id="test",
+            name="Test Strategy",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                {"card_id": "entry", "role": "entry", "enabled": True, "overrides": {}}
+            ],
+        )
+        cards = {
+            "entry": Card(
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                id="entry",
+                type="entry.rule_trigger",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "compare",
+                            "compare": {
+                                "lhs": {"type": "price", "field": "close"},
+                                "op": "<",
+                                "rhs": 100.0,
+                            },
+                        }
+                    },
+                    "action": {
+                        "direction": "short",
+                        "sizing": {"type": "pct_equity", "pct": 10},
+                    },
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        # Short with 10% sizing should produce -0.10
+        assert ir.entry is not None
+        assert ir.entry.action.allocation == -0.10, (
+            f"Expected allocation=-0.10 for short 10% pct_equity, got {ir.entry.action.allocation}"
+        )
+
+    def test_default_allocation_without_sizing(self):
+        """Verify default allocation when no sizing spec provided.
+
+        When sizing is not specified, should use 95% allocation (current default).
+        """
+        strategy = Strategy(
+            id="test",
+            name="Test Strategy",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                {"card_id": "entry", "role": "entry", "enabled": True, "overrides": {}}
+            ],
+        )
+        cards = {
+            "entry": Card(
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                id="entry",
+                type="entry.rule_trigger",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "compare",
+                            "compare": {
+                                "lhs": {"type": "price", "field": "close"},
+                                "op": ">",
+                                "rhs": 100.0,
+                            },
+                        }
+                    },
+                    "action": {"direction": "long"},  # No sizing
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        # Should maintain backwards compatibility with 95% default
+        assert ir.entry is not None
+        assert ir.entry.action.allocation == 0.95, (
+            f"Expected default allocation=0.95, got {ir.entry.action.allocation}"
+        )
+
+
+class TestFixedSizingModes:
+    """Test fixed_usd and fixed_units sizing modes.
+
+    These modes pass through to the SetHoldingsAction with sizing_mode set
+    and the appropriate value field populated. The runtime converts these
+    to actual allocation at execution time using current prices.
+    """
+
+    def test_fixed_usd_sizing_produces_correct_action(self):
+        """Verify fixed_usd sizing produces SetHoldingsAction with fixed_usd."""
+        strategy = Strategy(
+            id="test",
+            name="Test Strategy",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                {"card_id": "entry", "role": "entry", "enabled": True, "overrides": {}}
+            ],
+        )
+        cards = {
+            "entry": Card(
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                id="entry",
+                type="entry.rule_trigger",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "compare",
+                            "compare": {
+                                "lhs": {"type": "price", "field": "close"},
+                                "op": ">",
+                                "rhs": 100.0,
+                            },
+                        }
+                    },
+                    "action": {
+                        "direction": "long",
+                        "sizing": {"type": "fixed_usd", "usd": 5000},
+                    },
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        assert ir.entry is not None
+        action = ir.entry.action
+        assert action.sizing_mode == "fixed_usd", (
+            f"Expected sizing_mode='fixed_usd', got '{action.sizing_mode}'"
+        )
+        assert action.fixed_usd == 5000.0, (
+            f"Expected fixed_usd=5000.0, got {action.fixed_usd}"
+        )
+
+    def test_fixed_usd_short_produces_negative_value(self):
+        """Verify fixed_usd with short direction produces negative fixed_usd."""
+        strategy = Strategy(
+            id="test",
+            name="Test Strategy",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                {"card_id": "entry", "role": "entry", "enabled": True, "overrides": {}}
+            ],
+        )
+        cards = {
+            "entry": Card(
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                id="entry",
+                type="entry.rule_trigger",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "compare",
+                            "compare": {
+                                "lhs": {"type": "price", "field": "close"},
+                                "op": "<",
+                                "rhs": 100.0,
+                            },
+                        }
+                    },
+                    "action": {
+                        "direction": "short",
+                        "sizing": {"type": "fixed_usd", "usd": 2500},
+                    },
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        assert ir.entry is not None
+        action = ir.entry.action
+        assert action.sizing_mode == "fixed_usd"
+        assert action.fixed_usd == -2500.0, (
+            f"Expected fixed_usd=-2500.0 for short, got {action.fixed_usd}"
+        )
+
+    def test_fixed_units_sizing_produces_correct_action(self):
+        """Verify fixed_units sizing produces SetHoldingsAction with fixed_units."""
+        strategy = Strategy(
+            id="test",
+            name="Test Strategy",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                {"card_id": "entry", "role": "entry", "enabled": True, "overrides": {}}
+            ],
+        )
+        cards = {
+            "entry": Card(
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                id="entry",
+                type="entry.rule_trigger",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "compare",
+                            "compare": {
+                                "lhs": {"type": "price", "field": "close"},
+                                "op": ">",
+                                "rhs": 100.0,
+                            },
+                        }
+                    },
+                    "action": {
+                        "direction": "long",
+                        "sizing": {"type": "fixed_units", "units": 0.5},
+                    },
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        assert ir.entry is not None
+        action = ir.entry.action
+        assert action.sizing_mode == "fixed_units", (
+            f"Expected sizing_mode='fixed_units', got '{action.sizing_mode}'"
+        )
+        assert action.fixed_units == 0.5, (
+            f"Expected fixed_units=0.5, got {action.fixed_units}"
+        )
+
+    def test_fixed_units_short_produces_negative_value(self):
+        """Verify fixed_units with short direction produces negative fixed_units."""
+        strategy = Strategy(
+            id="test",
+            name="Test Strategy",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                {"card_id": "entry", "role": "entry", "enabled": True, "overrides": {}}
+            ],
+        )
+        cards = {
+            "entry": Card(
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                id="entry",
+                type="entry.rule_trigger",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "compare",
+                            "compare": {
+                                "lhs": {"type": "price", "field": "close"},
+                                "op": "<",
+                                "rhs": 100.0,
+                            },
+                        }
+                    },
+                    "action": {
+                        "direction": "short",
+                        "sizing": {"type": "fixed_units", "units": 1.0},
+                    },
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        assert ir.entry is not None
+        action = ir.entry.action
+        assert action.sizing_mode == "fixed_units"
+        assert action.fixed_units == -1.0, (
+            f"Expected fixed_units=-1.0 for short, got {action.fixed_units}"
+        )
+
+    def test_pct_equity_explicitly_sets_sizing_mode(self):
+        """Verify pct_equity sizing explicitly sets sizing_mode field."""
+        strategy = Strategy(
+            id="test",
+            name="Test Strategy",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                {"card_id": "entry", "role": "entry", "enabled": True, "overrides": {}}
+            ],
+        )
+        cards = {
+            "entry": Card(
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                id="entry",
+                type="entry.rule_trigger",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "compare",
+                            "compare": {
+                                "lhs": {"type": "price", "field": "close"},
+                                "op": ">",
+                                "rhs": 100.0,
+                            },
+                        }
+                    },
+                    "action": {
+                        "direction": "long",
+                        "sizing": {"type": "pct_equity", "pct": 25},
+                    },
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        assert ir.entry is not None
+        action = ir.entry.action
+        assert action.sizing_mode == "pct_equity", (
+            f"Expected sizing_mode='pct_equity', got '{action.sizing_mode}'"
+        )
+        assert action.allocation == 0.25
