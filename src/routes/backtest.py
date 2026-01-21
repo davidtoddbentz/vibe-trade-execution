@@ -12,6 +12,29 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
+
+def _get_id_token_for_service(target_audience: str) -> str | None:
+    """Get an ID token for authenticating to another Cloud Run service.
+
+    Uses the metadata server when running on GCP, returns None locally.
+
+    Args:
+        target_audience: The URL of the target service
+
+    Returns:
+        ID token string, or None if not running on GCP
+    """
+    try:
+        import google.auth.transport.requests
+        import google.oauth2.id_token
+
+        request = google.auth.transport.requests.Request()
+        token = google.oauth2.id_token.fetch_id_token(request, target_audience)
+        return token
+    except Exception as e:
+        logger.debug(f"Could not get ID token (expected locally): {e}")
+        return None
+
 router = APIRouter(prefix="/backtest", tags=["backtest"])
 
 
@@ -247,9 +270,22 @@ async def _run_backtest(
         emulator_host=emulator_host,
     )
 
+    # Get auth token for Cloud Run service-to-service calls
+    auth_token = None
+    if backtest_url and backtest_url.startswith("https://"):
+        # Extract the base URL (without path) for the audience
+        from urllib.parse import urlparse
+
+        parsed = urlparse(backtest_url)
+        audience = f"{parsed.scheme}://{parsed.netloc}"
+        auth_token = _get_id_token_for_service(audience)
+        if auth_token:
+            logger.info(f"Backtest {backtest_id}: Got auth token for {audience}")
+
     service = BacktestService(
         data_service=data_service,
         backtest_url=backtest_url,
+        auth_token=auth_token,
     )
 
     result = service.run_backtest(
