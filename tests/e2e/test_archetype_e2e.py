@@ -4118,3 +4118,39 @@ class TestFeesAndSlippage:
         assert pnl_fees < pnl_none, (
             f"Fees should reduce short PnL: without={pnl_none}, with={pnl_fees}"
         )
+
+    def test_summary_total_pnl_matches_trade_sum(self, backtest_service):
+        """Summary total_pnl should match the sum of individual trade PnLs.
+
+        This is critical for fee/slippage accuracy - if the summary uses
+        LEAN's portfolio value instead of our fee-adjusted trade PnLs,
+        the summary will show incorrect totals.
+        """
+        entry = make_entry_archetype(price_gt(99.0))
+        cards = {"entry": make_card("entry", entry)}
+        # Multiple trades with varied prices
+        bars = make_bars([95, 100, 90, 100, 85])
+
+        # Run with significant fees so any mismatch is obvious
+        result = run_archetype_backtest(
+            backtest_service, "test-summary-match", cards, bars,
+            fee_pct=0.5, slippage_pct=0.1
+        )
+        assert result.status == "success", f"Backtest failed: {result.error}"
+
+        trades = result.response.trades
+        summary = result.response.summary
+
+        # Sum individual trade PnLs
+        trade_pnl_sum = sum(t.pnl for t in trades)
+
+        # Summary should match
+        assert summary is not None, "Summary should not be None"
+        summary_pnl = summary.total_pnl
+
+        # Allow small rounding difference (< $1)
+        diff = abs(trade_pnl_sum - summary_pnl)
+        assert diff < 1.0, (
+            f"Summary total_pnl ({summary_pnl:.2f}) should match sum of trades "
+            f"({trade_pnl_sum:.2f}). Difference: ${diff:.2f}"
+        )

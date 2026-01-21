@@ -141,6 +141,9 @@ class BacktestRequestModel(BaseModel):
     start_date: datetime
     end_date: datetime
     initial_cash: float = 100000.0
+    # Trading costs
+    fee_pct: float = 0.0  # Fee as percentage of trade value (0.1 = 0.1%)
+    slippage_pct: float = 0.0  # Slippage as percentage of price (0.05 = 0.05%)
     # Parameter overrides: card_id -> path -> value
     # e.g., {"card123": {"event.dip_band.mult": 2.5}}
     card_overrides: dict[str, dict[str, float]] | None = None
@@ -295,6 +298,8 @@ async def _run_backtest(
             end_date=request.end_date,
             symbol=symbol,
             initial_cash=request.initial_cash,
+            fee_pct=request.fee_pct,
+            slippage_pct=request.slippage_pct,
         ),
         strategy,
         cards,
