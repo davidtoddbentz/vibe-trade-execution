@@ -2452,6 +2452,127 @@ class TestRealisticPatterns:
 
         assert result.status == "success", f"Mean reversion failed: {result.error}"
 
+    def test_ret_pct_triggers_entry_on_threshold(self, backtest_service):
+        """Verify ret_pct condition triggers entry when percentage threshold is met.
+
+        This specifically tests the fix for ret_pct using indicator_id instead of
+        indicator_type in regime_lowering.py. ROC returns decimals (-0.04) but
+        the condition threshold is in percentages (-4%), so we multiply ROC by 100.
+        """
+        # Entry when 1-bar return is <= -3%
+        condition = ConditionSpec(
+            type="regime",
+            regime=RegimeSpec(
+                metric="ret_pct",
+                op="<=",
+                value=-3.0,  # -3% threshold
+                lookback_bars=1,  # 1-bar ROC
+            ),
+        )
+        entry = make_entry_archetype(condition)
+        cards = {"entry": make_card("entry", entry)}
+
+        # Bar sequence: 100 -> 96 is a -4% move (should trigger)
+        # Need enough bars for ROC warmup (1 bar)
+        bars = make_bars([100, 96, 97, 98])  # -4% drop on bar 2, then recovery
+
+        result = run_archetype_backtest(backtest_service, "test-ret-pct-entry", cards, bars)
+
+        assert result.status == "success", f"ret_pct entry failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected trade when ret_pct <= -3% (actual was -4%)"
+
+    def test_ret_pct_no_entry_when_threshold_not_met(self, backtest_service):
+        """Verify ret_pct condition does NOT trigger when threshold not met.
+
+        If price drops only 2% but threshold is -3%, no entry should occur.
+        """
+        condition = ConditionSpec(
+            type="regime",
+            regime=RegimeSpec(
+                metric="ret_pct",
+                op="<=",
+                value=-3.0,  # -3% threshold
+                lookback_bars=1,
+            ),
+        )
+        entry = make_entry_archetype(condition)
+        cards = {"entry": make_card("entry", entry)}
+
+        # Bar sequence: 100 -> 98 is only a -2% move (should NOT trigger)
+        bars = make_bars([100, 98, 99, 100])  # Only -2% drop
+
+        result = run_archetype_backtest(backtest_service, "test-ret-pct-no-entry", cards, bars)
+
+        assert result.status == "success", f"ret_pct test failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) == 0, f"Expected no trade when ret_pct > -3% (actual was -2%), got {len(trades)} trades"
+
+    def test_btc_dip_buyer_with_recovery_condition(self, backtest_service):
+        """Test the exact strategy ND7hiWh7wmO7zdBHGrpD: BTC Short-Term Mean Reversion Dip Buyer.
+
+        Entry conditions:
+        - ret_pct(24 bars) <= -3% (24-hour dip)
+        - ret_pct(1 bar) > 0% (recovery started)
+
+        Sizing: fixed_usd $100
+        """
+        # Combined condition: 24-bar down AND 1-bar recovery
+        condition = ConditionSpec(
+            type="allOf",
+            allOf=[
+                ConditionSpec(
+                    type="regime",
+                    regime=RegimeSpec(
+                        metric="ret_pct",
+                        op="<=",
+                        value=-3.0,  # 24-bar return <= -3%
+                        lookback_bars=24,
+                    ),
+                ),
+                ConditionSpec(
+                    type="regime",
+                    regime=RegimeSpec(
+                        metric="ret_pct",
+                        op=">",
+                        value=0.0,  # 1-bar return > 0% (recovery)
+                        lookback_bars=1,
+                    ),
+                ),
+            ],
+        )
+
+        entry = EntryRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD", tf="1h"),
+            event=EventSlot(condition=condition),
+            action=EntryActionSpec(
+                direction="long",
+                sizing=SizingSpec(type="fixed_usd", usd=100.0),
+            ),
+        )
+        cards = {"entry": make_card("entry", entry)}
+
+        # Create price data:
+        # - 24 bars at $100 (warmup)
+        # - Bar 25: drop to $96 (4% down over 24 bars, but 1-bar is negative - no entry)
+        # - Bar 26: recovery to $96.50 (still -3.5% over 24 bars, 1-bar +0.5% - ENTRY!)
+        prices = [100.0] * 24 + [96.0, 96.5, 97.0, 97.5]
+        bars = make_bars(prices)
+
+        result = run_archetype_backtest(backtest_service, "test-btc-dip-buyer", cards, bars)
+
+        assert result.status == "success", f"BTC dip buyer failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, (
+            f"Expected entry when 24-bar ret_pct <= -3% AND 1-bar ret_pct > 0%. "
+            f"Got {len(trades)} trades."
+        )
+        # Verify fixed_usd sizing: $100 / ~$96.50 ≈ 1.036 units
+        if trades:
+            qty = trades[0].quantity
+            expected_qty = 100.0 / 96.5
+            assert abs(qty - expected_qty) < 0.1, f"Expected qty ~{expected_qty:.4f}, got {qty:.4f}"
+
 
 # =============================================================================
 # Time Conditions Tests
@@ -3904,6 +4025,90 @@ class TestPositionSizing:
         assert 4.5 < pnl_ratio < 5.5, (
             f"Expected PnL ratio ~5x (50%/10%), got {pnl_ratio:.2f}x "
             f"(PnL 10%={pnl_10:.2f}, PnL 50%={pnl_50:.2f})"
+        )
+
+
+    def test_small_allocation_sizing(self, backtest_service):
+        """Small allocation percentages (1%) should still execute trades.
+
+        This tests the fix for LEAN's MinimumOrderMarginPortfolioPercentage setting
+        which silently skips small orders by default.
+        See: https://www.quantconnect.com/forum/discussion/2978/minimum-order-clip-size/
+
+        Setup:
+            - Initial cash: $100,000
+            - Entry price: ~$100
+            - Sizing: 1% of equity = $1,000
+            - Expected: $1,000 / $100 = 10 units
+
+        The fix sets Settings.MinimumOrderMarginPortfolioPercentage = 0 to allow
+        all orders regardless of portfolio percentage.
+        """
+        # Use 1% sizing which is a small allocation
+        sizing = SizingSpec(type="pct_equity", pct=1)
+        entry = make_entry_archetype_with_sizing(price_gt(99.0), sizing)
+        cards = {"entry": make_card("entry", entry)}
+        # Standard prices
+        bars = make_bars([95, 100, 105])
+
+        result = run_archetype_backtest(backtest_service, "test-small-btc-order", cards, bars)
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+
+        # CRITICAL: We must have a trade - the small allocation should NOT be skipped
+        assert len(trades) >= 1, (
+            "No trades executed! Small allocation was likely skipped due to "
+            "MinimumOrderMarginPortfolioPercentage. Check that the setting is 0."
+        )
+
+        trade = trades[0]
+        # 1% of $100k at $100/unit = 10 units
+        expected_quantity = 10.0
+        assert trade.quantity > 0, f"Trade quantity is 0 or negative: {trade.quantity}"
+        assert abs(trade.quantity - expected_quantity) <= 2, (
+            f"Expected ~{expected_quantity} units with 1% sizing at $100 price, "
+            f"got {trade.quantity}"
+        )
+
+    def test_ten_dollar_fixed_usd_order(self, backtest_service):
+        """$10 fixed USD orders should execute correctly.
+
+        Users should be able to buy $10 of bitcoin. This tests the complete flow:
+        - Strategy card with fixed_usd=$10 sizing
+        - IR translation to SetHoldingsAction with sizing_mode=fixed_usd
+        - LEAN runtime executing MarketOrder for correct quantity
+
+        Setup:
+            - Entry price: $100
+            - Sizing: fixed_usd $10
+            - Expected: $10 / $100 = 0.1 units
+        """
+        # Create entry with $10 fixed_usd sizing
+        sizing = SizingSpec(type="fixed_usd", usd=10.0)
+        entry = make_entry_archetype_with_sizing(price_gt(99.0), sizing)
+        cards = {"entry": make_card("entry", entry)}
+        # Use more bars to ensure LEAN processes enough data
+        bars = make_bars([95, 100, 105, 106, 107, 108])
+
+        result = run_archetype_backtest(backtest_service, "test-10-dollar-btc", cards, bars)
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+
+        # CRITICAL: $10 order must execute
+        assert len(trades) >= 1, (
+            "No trades executed! $10 fixed_usd order was not placed. "
+            "Check that fixed_usd sizing is properly translated to IR."
+        )
+
+        trade = trades[0]
+        # $10 / $100 = 0.1 units
+        expected_quantity = 0.1
+        assert trade.quantity > 0, f"Trade quantity is 0 or negative: {trade.quantity}"
+        assert abs(trade.quantity - expected_quantity) < 0.02, (
+            f"Expected ~{expected_quantity} units for $10 at $100 price, "
+            f"got {trade.quantity}"
         )
 
 
