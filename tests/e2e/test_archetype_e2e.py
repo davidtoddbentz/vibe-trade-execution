@@ -4111,6 +4111,48 @@ class TestPositionSizing:
             f"got {trade.quantity}"
         )
 
+    def test_fixed_usd_at_high_btc_price(self, backtest_service):
+        """100 fixed USD order at realistic BTC prices (~85,000).
+
+        This is a critical regression test. LEAN default lot size for custom
+        data is 1 unit, which would reject orders for 0.00117 BTC (100 at 85k).
+        The fix sets lotSize=0.00000001 to allow tiny fractional orders.
+
+        Setup:
+            - Entry price: 85,000 (realistic BTC price)
+            - Sizing: fixed_usd 100
+            - Expected: 100 / 85,000 = 0.00117647 units
+
+        This test would FAIL without the SymbolProperties lotSize fix.
+        """
+        sizing = SizingSpec(type="fixed_usd", usd=100.0)
+        # Use high BTC-like prices
+        entry = make_entry_archetype_with_sizing(price_gt(84000.0), sizing)
+        cards = {"entry": make_card("entry", entry)}
+        # Simulate BTC prices: warmup at 80k, then crosses 85k
+        bars = make_bars([80000, 82000, 84000, 85000, 86000, 87000])
+
+        result = run_archetype_backtest(backtest_service, "test-fixed-usd-high-price", cards, bars)
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+
+        # CRITICAL: Order must execute even at high prices with tiny quantity
+        assert len(trades) >= 1, (
+            "No trades executed! 100 fixed_usd order at 85k BTC price was rejected. "
+            "This indicates the lotSize fix is not working - LEAN requires lotSize < order quantity."
+        )
+
+        trade = trades[0]
+        # 100 / 85,000 = 0.00117647 units
+        expected_quantity = 100.0 / 85000.0
+        assert trade.quantity > 0, f"Trade quantity is 0 or negative: {trade.quantity}"
+        # Allow 20% tolerance due to price movement during entry
+        assert abs(trade.quantity - expected_quantity) / expected_quantity < 0.20, (
+            f"Expected ~{expected_quantity:.8f} units for 100 at ~85k price, "
+            f"got {trade.quantity:.8f}"
+        )
+
 
 # =============================================================================
 # Fee and Slippage Tests
