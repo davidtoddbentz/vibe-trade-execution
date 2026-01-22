@@ -4154,6 +4154,22 @@ class TestPositionSizing:
         )
 
 
+
+    def test_ten_dollar_fixed_usd_at_high_btc_price(self, backtest_service):
+        sizing = SizingSpec(type="fixed_usd", usd=10.0)
+        entry = make_entry_archetype_with_sizing(price_gt(89000.0), sizing)
+        cards = {"entry": make_card("entry", entry)}
+        bars = make_bars([85000, 88000, 89000, 90000, 91000, 92000])
+        result = run_archetype_backtest(backtest_service, "test-10-usd-at-90k-btc", cards, bars)
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "No trades executed!"
+        trade = trades[0]
+        expected_quantity = 10.0 / 90000.0
+        assert trade.quantity > 0
+        assert abs(trade.quantity - expected_quantity) / expected_quantity < 0.25
+
+
 # =============================================================================
 # Fee and Slippage Tests
 # =============================================================================
