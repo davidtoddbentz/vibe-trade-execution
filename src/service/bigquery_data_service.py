@@ -119,7 +119,7 @@ class BigQueryDataService:
         if view_name == "candles_parsed":
             granularity = self.RESOLUTION_MAP.get(resolution.lower())
             query = f"""
-            SELECT
+            SELECT DISTINCT
                 timestamp,
                 open,
                 high,
@@ -146,7 +146,7 @@ class BigQueryDataService:
         else:
             # Aggregated views don't have granularity column
             query = f"""
-            SELECT
+            SELECT DISTINCT
                 timestamp,
                 open,
                 high,

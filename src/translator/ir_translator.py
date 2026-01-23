@@ -251,6 +251,9 @@ class IRTranslator:
             adapter = TypeAdapter(Condition)
             local_condition = adapter.validate_python(condition_dict)
 
+            # Extract and declare state vars from StateCondition nodes in the condition tree
+            self._extract_state_condition_vars(condition_dict)
+
             # Collect state declarations from archetype
             for state_var in typed_archetype.get_state_vars():
                 var_type = {
@@ -817,6 +820,43 @@ class IRTranslator:
                 var_type=var_type,
                 default=default,
             )
+
+    def _extract_state_condition_vars(self, condition: dict) -> None:
+        """Recursively extract and declare state variables from StateCondition nodes.
+
+        StateCondition (used for reentry patterns) requires a boolean state variable
+        to track whether the previous bar was outside/inside a band. This method
+        walks the condition tree and auto-declares these state variables.
+
+        Args:
+            condition: The condition dict to process (may contain nested conditions)
+        """
+        if not isinstance(condition, dict):
+            return
+
+        cond_type = condition.get("type")
+
+        # If this is a StateCondition, declare its state variable
+        if cond_type == "state_condition":
+            state_var = condition.get("state_var")
+            if state_var:
+                # StateCondition uses boolean state to track outside/inside status
+                self._add_state(state_var, StateType.BOOL, False)
+                logger.debug(f"Auto-declared state var '{state_var}' for StateCondition")
+
+        # Recursively process nested conditions
+        if cond_type == "allOf" and "conditions" in condition:
+            for nested in condition["conditions"]:
+                self._extract_state_condition_vars(nested)
+        elif cond_type == "anyOf" and "conditions" in condition:
+            for nested in condition["conditions"]:
+                self._extract_state_condition_vars(nested)
+        elif cond_type == "not" and "condition" in condition:
+            self._extract_state_condition_vars(condition["condition"])
+        elif cond_type == "sequence" and "steps" in condition:
+            for step in condition["steps"]:
+                if "condition" in step:
+                    self._extract_state_condition_vars(step["condition"])
 
     def _invert_op(self, op: CompareOp) -> CompareOp:
         """Invert a comparison operator."""
