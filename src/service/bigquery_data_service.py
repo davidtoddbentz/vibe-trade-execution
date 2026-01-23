@@ -21,18 +21,19 @@ class BigQueryDataService:
     """
 
     # Map resolution strings to BQ view names
-    # Each resolution has a dedicated view: candles_1m, candles_5m, candles_1h, candles_1d
+    # Aggregation views (candles_1h, candles_1d) roll up from 1m data in real-time
+    # This ensures live trading and backtests always have up-to-date data
     RESOLUTION_TO_VIEW = {
         "1m": "candles_parsed",  # Raw 1m data
         "1min": "candles_parsed",
         "minute": "candles_parsed",
-        "5m": "candles_5m",
+        "5m": "candles_5m",  # Aggregation view from 1m
         "15m": "candles_5m",  # Use 5m and filter client-side for now
-        "1h": "candles_parsed",  # Direct 1h candles from backfill
-        "hour": "candles_parsed",
-        "4h": "candles_parsed",  # Use candles_parsed with granularity filter
-        "1d": "candles_parsed",  # Direct 1d candles from backfill
-        "daily": "candles_parsed",
+        "1h": "candles_1h",  # Aggregation view from 1m
+        "hour": "candles_1h",
+        "4h": "candles_parsed",  # Use candles_parsed with granularity filter (TODO: add candles_4h view)
+        "1d": "candles_1d",  # Aggregation view from 1m
+        "daily": "candles_1d",
     }
 
     # Map resolution strings to BQ granularity values (for candles_parsed filtering)
