@@ -28,11 +28,11 @@ class BigQueryDataService:
         "minute": "candles_parsed",
         "5m": "candles_5m",
         "15m": "candles_5m",  # Use 5m and filter client-side for now
-        "1h": "candles_1h",
-        "hour": "candles_1h",
-        "4h": "candles_1h",  # Use 1h and filter client-side for now
-        "1d": "candles_1d",
-        "daily": "candles_1d",
+        "1h": "candles_parsed",  # Direct 1h candles from backfill
+        "hour": "candles_parsed",
+        "4h": "candles_parsed",  # Use candles_parsed with granularity filter
+        "1d": "candles_parsed",  # Direct 1d candles from backfill
+        "daily": "candles_parsed",
     }
 
     # Map resolution strings to BQ granularity values (for candles_parsed filtering)
