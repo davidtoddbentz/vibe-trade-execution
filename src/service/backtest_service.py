@@ -199,6 +199,9 @@ class BacktestService:
                 )
 
             # Step 2: Get market data (with warmup period for indicators)
+            # Track the effective LEAN start date (may be earlier for warmup)
+            lean_start_date = request.start_date
+
             if inline_bars is not None:
                 # Use provided bars (tests)
                 bars = inline_bars
@@ -210,6 +213,7 @@ class BacktestService:
                 warmup_bars = _calculate_warmup_bars(ir_dict)
                 bar_duration = _resolution_to_timedelta(request.resolution)
                 warmup_start = request.start_date - (warmup_bars * bar_duration)
+                lean_start_date = warmup_start  # LEAN needs to start earlier for warmup
 
                 logger.info(
                     f"Fetching data from DataService for {request.symbol}... "
@@ -267,7 +271,8 @@ class BacktestService:
                     bars=bars,
                 ),
                 config=BacktestConfig(
-                    start_date=request.start_date.date(),
+                    # Use lean_start_date to include warmup period in LEAN's processing
+                    start_date=lean_start_date.date(),
                     end_date=request.end_date.date(),
                     initial_cash=request.initial_cash,
                 ),
