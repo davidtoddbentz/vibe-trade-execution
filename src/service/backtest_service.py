@@ -16,7 +16,7 @@ Data Flow:
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
@@ -71,6 +71,53 @@ class BacktestResult:
     algorithm_code: str | None = None
     error: str | None = None
     response: LEANBacktestResponse | None = None
+
+
+def _calculate_warmup_bars(strategy_ir: dict) -> int:
+    """Calculate the number of warmup bars needed for indicator initialization.
+
+    Examines all indicators in the IR and returns the maximum period,
+    plus a safety buffer. This ensures indicators are ready before trading starts.
+
+    Args:
+        strategy_ir: The strategy IR dict with indicators list
+
+    Returns:
+        Number of warmup bars needed (minimum 50 for safety)
+    """
+    max_period = 0
+    for indicator in strategy_ir.get("indicators", []):
+        period = indicator.get("period", 0)
+        if period > max_period:
+            max_period = period
+
+    # Add safety buffer: max period + 10, minimum 50 bars
+    warmup_bars = max(max_period + 10, 50)
+    return warmup_bars
+
+
+def _resolution_to_timedelta(resolution: str) -> timedelta:
+    """Convert resolution string to timedelta for warmup calculation.
+
+    Args:
+        resolution: Resolution string like "1h", "1d", "1m"
+
+    Returns:
+        timedelta representing one bar's duration
+    """
+    resolution_lower = resolution.lower()
+    if resolution_lower in ("1d", "daily"):
+        return timedelta(days=1)
+    elif resolution_lower in ("4h",):
+        return timedelta(hours=4)
+    elif resolution_lower in ("1h", "hour"):
+        return timedelta(hours=1)
+    elif resolution_lower in ("15m",):
+        return timedelta(minutes=15)
+    elif resolution_lower in ("5m",):
+        return timedelta(minutes=5)
+    else:  # Default to 1 minute
+        return timedelta(minutes=1)
 
 
 class BacktestService:
@@ -151,21 +198,30 @@ class BacktestService:
                     error="Failed to translate strategy to IR",
                 )
 
-            # Step 2: Get market data
+            # Step 2: Get market data (with warmup period for indicators)
             if inline_bars is not None:
                 # Use provided bars (tests)
                 bars = inline_bars
                 logger.info(f"Using {len(bars)} provided inline bars")
             elif self.data_service is not None:
                 # Fetch from DataService (production)
-                logger.info(f"Fetching data from DataService for {request.symbol}...")
+                # Calculate warmup period based on indicator periods
+                ir_dict = strategy_ir.model_dump()
+                warmup_bars = _calculate_warmup_bars(ir_dict)
+                bar_duration = _resolution_to_timedelta(request.resolution)
+                warmup_start = request.start_date - (warmup_bars * bar_duration)
+
+                logger.info(
+                    f"Fetching data from DataService for {request.symbol}... "
+                    f"(with {warmup_bars} warmup bars starting {warmup_start.date()})"
+                )
                 bars = self.data_service.get_ohlcv(
                     symbol=request.symbol,
                     resolution=request.resolution,
-                    start=request.start_date,
+                    start=warmup_start,
                     end=request.end_date,
                 )
-                logger.info(f"Fetched {len(bars)} bars")
+                logger.info(f"Fetched {len(bars)} bars (including warmup)")
             else:
                 return BacktestResult(
                     status="error",
