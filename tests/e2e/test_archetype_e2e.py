@@ -48,6 +48,7 @@ from vibe_trade_shared.models.archetypes.primitives import (
     PositionRiskSpec,
     RegimeSpec,
     SequenceStep,
+    # Position policy for accumulation tests
     SignalRef,
     SizingSpec,
     SpreadConditionSpec,
@@ -55,6 +56,7 @@ from vibe_trade_shared.models.archetypes.primitives import (
     TimeFilterSpec,
     TrailingStateSpec,
 )
+from vibe_trade_shared.models.ir import PositionPolicy
 from vibe_trade_shared.models.archetypes.entry.rule_trigger import (
     EntryRuleTrigger,
     EventSlot,
@@ -410,12 +412,37 @@ def make_entry_archetype_with_sizing(
     sizing: SizingSpec,
     direction: str = "long",
     symbol: str = "TESTUSD",
+    position_policy: PositionPolicy | None = None,
 ) -> EntryRuleTrigger:
     """Create EntryRuleTrigger with custom sizing specification."""
     return EntryRuleTrigger(
         context=ContextSpec(symbol=symbol, tf="1h"),
         event=EventSlot(condition=condition),
-        action=EntryActionSpec(direction=direction, sizing=sizing),
+        action=EntryActionSpec(direction=direction, sizing=sizing, position_policy=position_policy),
+    )
+
+
+def make_entry_archetype_with_accumulation(
+    condition: ConditionSpec,
+    mode: str = "accumulate",
+    max_positions: int | None = None,
+    min_bars_between: int | None = None,
+    scale_factor: float | None = None,
+    sizing: SizingSpec | None = None,
+    direction: str = "long",
+    symbol: str = "TESTUSD",
+) -> EntryRuleTrigger:
+    """Create EntryRuleTrigger with position policy for accumulation."""
+    policy = PositionPolicy(
+        mode=mode,
+        max_positions=max_positions,
+        min_bars_between=min_bars_between,
+        scale_factor=scale_factor,
+    )
+    return EntryRuleTrigger(
+        context=ContextSpec(symbol=symbol, tf="1h"),
+        event=EventSlot(condition=condition),
+        action=EntryActionSpec(direction=direction, sizing=sizing, position_policy=policy),
     )
 
 
@@ -4417,3 +4444,203 @@ class TestFeesAndSlippage:
             f"Summary total_pnl ({summary_pnl:.2f}) should match sum of trades "
             f"({trade_pnl_sum:.2f}). Difference: ${diff:.2f}"
         )
+
+
+# =============================================================================
+# Position Policy / Accumulation Tests
+# =============================================================================
+
+
+@requires_lean
+class TestPositionPolicyAccumulate:
+    """Test position policy with accumulate mode.
+
+    Accumulate mode allows multiple entries while invested.
+    """
+
+    def test_accumulate_multiple_entries(self, backtest_service):
+        """Multiple entries when condition triggers repeatedly.
+
+        Strategy: Enter when close > 100, allow accumulation
+        Data pattern:
+            Bar 0: close = 95   (below threshold)
+            Bar 1: close = 101  (ABOVE - ENTRY #1)
+            Bar 2: close = 99   (below threshold - no entry)
+            Bar 3: close = 102  (ABOVE - ENTRY #2)
+            Bar 4: close = 98   (below threshold - no entry)
+            Bar 5: close = 97   (below - exit at end)
+
+        Expected: 2 lots, entry at bars 1 and 3
+        """
+        entry = make_entry_archetype_with_accumulation(
+            condition=price_gt(100.0),
+            mode="accumulate",
+            sizing=SizingSpec(type="fixed_usd", usd=1000),
+        )
+        cards = {"entry": make_card("entry", entry)}
+        bars = make_bars([95, 101, 99, 102, 98, 97])
+
+        result = run_archetype_backtest(backtest_service, "test-accumulate", cards, bars)
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+
+        # Should have 2 lots (condition only true on bars 1 and 3)
+        assert len(trades) == 2, f"Expected 2 trades/lots, got {len(trades)}"
+
+        # Check entry bars
+        entry_bars = sorted([t.entry_bar for t in trades])
+        assert entry_bars == [1, 3], f"Expected entry bars [1, 3], got {entry_bars}"
+
+        # All should exit at end (bar 5)
+        for trade in trades:
+            assert trade.exit_bar == 5, f"Expected exit at bar 5, got {trade.exit_bar}"
+            assert trade.exit_reason == "end_of_backtest"
+
+    def test_accumulate_with_max_positions(self, backtest_service):
+        """Max positions limits number of lots.
+
+        Strategy: Enter when close > 100, max 2 positions
+        Data pattern:
+            Bar 0: close = 95   (below)
+            Bar 1: close = 101  (ENTRY #1)
+            Bar 2: close = 102  (ENTRY #2)
+            Bar 3: close = 103  (would enter, but max reached)
+            Bar 4: close = 104  (would enter, but max reached)
+            Bar 5: close = 105  (exit at end)
+
+        Expected: 2 lots only (max_positions enforced)
+        """
+        entry = make_entry_archetype_with_accumulation(
+            condition=price_gt(100.0),
+            mode="accumulate",
+            max_positions=2,
+            sizing=SizingSpec(type="fixed_usd", usd=1000),
+        )
+        cards = {"entry": make_card("entry", entry)}
+        bars = make_bars([95, 101, 102, 103, 104, 105])
+
+        result = run_archetype_backtest(backtest_service, "test-max-pos", cards, bars)
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+
+        # Should have exactly 2 lots (max_positions limit)
+        assert len(trades) == 2, f"Expected 2 trades (max_positions=2), got {len(trades)}"
+
+    def test_accumulate_with_min_bars_between(self, backtest_service):
+        """Min bars between enforces cooldown.
+
+        Strategy: Enter when close > 100, min 3 bars between entries
+        Data pattern:
+            Bar 0: close = 95   (below)
+            Bar 1: close = 101  (ENTRY #1)
+            Bar 2: close = 102  (cooldown - no entry)
+            Bar 3: close = 103  (cooldown - no entry)
+            Bar 4: close = 104  (cooldown over - ENTRY #2)
+            Bar 5: close = 98   (below - exit at end)
+
+        Expected: 2 lots (bars 1 and 4)
+        """
+        entry = make_entry_archetype_with_accumulation(
+            condition=price_gt(100.0),
+            mode="accumulate",
+            min_bars_between=3,
+            sizing=SizingSpec(type="fixed_usd", usd=1000),
+        )
+        cards = {"entry": make_card("entry", entry)}
+        bars = make_bars([95, 101, 102, 103, 104, 98])
+
+        result = run_archetype_backtest(backtest_service, "test-cooldown", cards, bars)
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+
+        # Should have 2 lots due to cooldown
+        assert len(trades) == 2, f"Expected 2 trades (min_bars_between=3), got {len(trades)}"
+
+        entry_bars = sorted([t.entry_bar for t in trades])
+        assert entry_bars == [1, 4], f"Expected entry bars [1, 4], got {entry_bars}"
+
+
+@requires_lean
+class TestPositionPolicyScaleIn:
+    """Test position policy with scale_in mode.
+
+    Scale-in mode allows multiple entries with diminishing size.
+    """
+
+    def test_scale_in_diminishing_size(self, backtest_service):
+        """Each entry is smaller than previous (scale_factor).
+
+        Strategy: Enter when close > 100, scale_factor=0.5
+        First entry: full size, second: 50%, third: 25%
+
+        Data pattern:
+            Bar 0: close = 95   (below)
+            Bar 1: close = 101  (ENTRY #1 - full)
+            Bar 2: close = 102  (ENTRY #2 - 50%)
+            Bar 3: close = 103  (ENTRY #3 - 25%)
+            Bar 4: close = 98   (below - exit at end)
+
+        Expected: 3 lots with decreasing quantities
+        """
+        entry = make_entry_archetype_with_accumulation(
+            condition=price_gt(100.0),
+            mode="scale_in",
+            scale_factor=0.5,
+            sizing=SizingSpec(type="fixed_usd", usd=10000),
+        )
+        cards = {"entry": make_card("entry", entry)}
+        bars = make_bars([95, 101, 102, 103, 98])
+
+        result = run_archetype_backtest(backtest_service, "test-scale-in", cards, bars)
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+
+        # Should have 3 lots
+        assert len(trades) == 3, f"Expected 3 trades, got {len(trades)}"
+
+        # Sort by entry bar to get in order
+        trades_sorted = sorted(trades, key=lambda t: t.entry_bar)
+
+        # Quantities should be approximately: 100%, 50%, 25% of first
+        qty1 = trades_sorted[0].quantity
+        qty2 = trades_sorted[1].quantity
+        qty3 = trades_sorted[2].quantity
+
+        # Allow 10% tolerance for rounding
+        assert 0.45 * qty1 <= qty2 <= 0.55 * qty1, f"Second entry qty {qty2} should be ~50% of first {qty1}"
+        assert 0.45 * qty2 <= qty3 <= 0.55 * qty2, f"Third entry qty {qty3} should be ~50% of second {qty2}"
+
+
+@requires_lean
+class TestPositionPolicySingle:
+    """Test that single mode (default) prevents accumulation."""
+
+    def test_single_mode_no_accumulation(self, backtest_service):
+        """Default single mode: only one position at a time.
+
+        Strategy: Enter when close > 100 (no position_policy = single)
+        Data pattern:
+            Bar 0: close = 95   (below)
+            Bar 1: close = 101  (ENTRY)
+            Bar 2: close = 102  (already invested - no entry)
+            Bar 3: close = 103  (already invested - no entry)
+            Bar 4: close = 105  (exit at end)
+
+        Expected: 1 trade only
+        """
+        entry = make_entry_archetype(price_gt(100.0))  # No position_policy
+        cards = {"entry": make_card("entry", entry)}
+        bars = make_bars([95, 101, 102, 103, 105])
+
+        result = run_archetype_backtest(backtest_service, "test-single", cards, bars)
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+
+        # Should have exactly 1 trade (single mode)
+        assert len(trades) == 1, f"Expected 1 trade (single mode), got {len(trades)}"
+        assert trades[0].entry_bar == 1

@@ -64,6 +64,22 @@ def _extract_symbol_from_cards(cards: dict[str, Any]) -> str:
     return "BTC-USD"  # Default fallback
 
 
+def _extract_timeframe_from_cards(cards: dict[str, Any]) -> str:
+    """Extract timeframe from entry card's context.
+
+    Looks for an entry card and extracts the timeframe (tf) from its context slot.
+    Falls back to 1h if no timeframe found.
+    """
+    for card in cards.values():
+        card_type = card.type if hasattr(card, "type") else card.get("type", "")
+        if card_type.startswith("entry."):
+            slots = card.slots if hasattr(card, "slots") else card.get("slots", {})
+            context = slots.get("context", {})
+            if tf := context.get("tf"):
+                return tf
+    return "1h"  # Default fallback
+
+
 def _apply_card_overrides(
     cards: dict[str, Any], overrides: dict[str, dict[str, float]] | None
 ) -> dict[str, Any]:
@@ -213,11 +229,12 @@ async def run_backtest(request: BacktestRequestModel) -> BacktestResponseModel:
             logger.info(f"Backtest {backtest_id}: Applying overrides to {len(request.card_overrides)} cards")
             cards = _apply_card_overrides(cards, request.card_overrides)
 
-        # Extract symbol from entry card context
+        # Extract symbol and timeframe from entry card context
         symbol = _extract_symbol_from_cards(cards)
-        logger.info(f"Backtest {backtest_id}: Using symbol {symbol} from strategy cards")
+        timeframe = _extract_timeframe_from_cards(cards)
+        logger.info(f"Backtest {backtest_id}: Using symbol {symbol}, timeframe {timeframe} from strategy cards")
 
-        return await _run_backtest(backtest_id, request, strategy, cards, symbol)
+        return await _run_backtest(backtest_id, request, strategy, cards, symbol, timeframe)
 
     except HTTPException:
         raise
@@ -240,6 +257,7 @@ async def _run_backtest(
     strategy: Any,
     cards: dict[str, Any],
     symbol: str,
+    resolution: str = "1h",
 ) -> BacktestResponseModel:
     """Run backtest via HTTP endpoint.
 
@@ -297,6 +315,7 @@ async def _run_backtest(
             start_date=request.start_date,
             end_date=request.end_date,
             symbol=symbol,
+            resolution=resolution,
             initial_cash=request.initial_cash,
             fee_pct=request.fee_pct,
             slippage_pct=request.slippage_pct,

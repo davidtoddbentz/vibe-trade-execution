@@ -33,6 +33,7 @@ from .ir import (
     Minimum,
     OverlayRule,
     Percentile,
+    PositionPolicy,
     RateOfChange,
     Resolution,
     RollingMinMax,
@@ -70,12 +71,17 @@ class IRTranslator:
     }
 
     # Map resolution strings to Resolution enum
+    # Note: 5m and 15m map to MINUTE as LEAN doesn't have native 5/15-min resolution
+    # The actual bar aggregation happens at data fetch time
     RESOLUTION_MAP = {
         "1m": Resolution.MINUTE,
         "1min": Resolution.MINUTE,
         "minute": Resolution.MINUTE,
+        "5m": Resolution.MINUTE,  # LEAN uses MINUTE, data is pre-aggregated
+        "15m": Resolution.MINUTE,  # LEAN uses MINUTE, data is pre-aggregated
         "1h": Resolution.HOUR,
         "hour": Resolution.HOUR,
+        "4h": Resolution.HOUR,  # LEAN uses HOUR, data is pre-aggregated
         "1d": Resolution.DAILY,
         "daily": Resolution.DAILY,
     }
@@ -116,6 +122,8 @@ class IRTranslator:
 
         Direction determines the sign: long=positive, short=negative.
 
+        Also passes through position_policy if specified.
+
         Args:
             action: The action dict from the archetype slots
             direction: "long" or "short"
@@ -126,10 +134,18 @@ class IRTranslator:
         sign = 1.0 if direction == "long" else -1.0
         default_allocation = 0.95
 
+        # Extract position_policy if present
+        position_policy = None
+        policy_dict = action.get("position_policy")
+        if policy_dict:
+            position_policy = PositionPolicy(**policy_dict)
+
         sizing = action.get("sizing")
         if not sizing:
             return SetHoldingsAction(
-                sizing_mode="pct_equity", allocation=sign * default_allocation
+                sizing_mode="pct_equity",
+                allocation=sign * default_allocation,
+                position_policy=position_policy,
             )
 
         sizing_type = sizing.get("type")
@@ -139,7 +155,9 @@ class IRTranslator:
             pct = sizing.get("pct", default_allocation * 100)
             allocation = pct / 100.0
             return SetHoldingsAction(
-                sizing_mode="pct_equity", allocation=sign * allocation
+                sizing_mode="pct_equity",
+                allocation=sign * allocation,
+                position_policy=position_policy,
             )
 
         if sizing_type == "fixed_usd":
@@ -148,6 +166,7 @@ class IRTranslator:
                 sizing_mode="fixed_usd",
                 allocation=0.0,  # Not used, but must be valid
                 fixed_usd=sign * usd_amount,
+                position_policy=position_policy,
             )
 
         if sizing_type == "fixed_units":
@@ -156,6 +175,7 @@ class IRTranslator:
                 sizing_mode="fixed_units",
                 allocation=0.0,  # Not used, but must be valid
                 fixed_units=sign * units,
+                position_policy=position_policy,
             )
 
         # Unsupported sizing type - fall back to default
@@ -163,7 +183,9 @@ class IRTranslator:
             f"Sizing type '{sizing_type}' not supported, using default 95% allocation"
         )
         return SetHoldingsAction(
-            sizing_mode="pct_equity", allocation=sign * default_allocation
+            sizing_mode="pct_equity",
+            allocation=sign * default_allocation,
+            position_policy=position_policy,
         )
 
     def _try_archetype_to_ir(self, archetype: str, slots: dict[str, Any]) -> Condition | None:

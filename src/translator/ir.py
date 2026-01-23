@@ -66,6 +66,7 @@ from vibe_trade_shared.models.ir import (  # noqa: F401
     MinStateAction,
     NotCondition,
     OverlayRule,
+    PositionPolicy,
     PriceField,
     PriceRef,
     RegimeCondition,
