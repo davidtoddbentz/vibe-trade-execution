@@ -148,6 +148,65 @@ class TestTrendPullbackTranslation:
         indicator_ids = {ind.id for ind in ir.indicators}
         assert "donchian_20" in indicator_ids, "Donchian 20 should be registered from StateCondition"
 
+    def test_trend_pullback_reentry_declares_state_variable(self):
+        """Verify StateCondition declares its required state variable in IR.
+
+        This is a regression test for a critical bug: StateCondition (used for
+        reentry patterns) requires a boolean state variable to track whether
+        the previous bar was outside/inside a band. Without this declaration,
+        the LEAN runtime can't track state and reentry signals fail silently.
+
+        The bug caused 0 trades in production because:
+        1. StateCondition generated correct IR structure
+        2. But state_var wasn't declared in ir.state
+        3. LEAN runtime couldn't track state, so condition never triggered
+        """
+        strategy = Strategy(
+            id="test",
+            name="Test Strategy",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                {"card_id": "entry", "role": "entry", "enabled": True, "overrides": {}}
+            ],
+        )
+        cards = {
+            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1", 
+                id="entry",
+                type="entry.trend_pullback",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "dip_band": {"band": "bollinger", "length": 20, "mult": 2.0},
+                        "dip": {"kind": "reentry", "edge": "lower"},
+                        "trend_gate": {"fast": 20, "slow": 50, "op": ">"},
+                    },
+                    "action": {"direction": "long"},
+                    "risk": {"sl_atr": 2.0},
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        # Verify state variable is declared for StateCondition
+        state_var_ids = {s.id for s in ir.state}
+        expected_state_var = "outside_bollinger_20_lower"
+
+        assert expected_state_var in state_var_ids, (
+            f"StateCondition requires state variable '{expected_state_var}' to be declared in ir.state. "
+            f"Found: {state_var_ids}. "
+            "Without this, LEAN can't track outside/inside state and reentry signals fail."
+        )
+
+        # Verify the state variable is boolean type
+        state_var = next(s for s in ir.state if s.id == expected_state_var)
+        assert state_var.var_type == "bool", (
+            f"State variable '{expected_state_var}' should be bool type, got {state_var.var_type}"
+        )
+
 
 class TestTrailingStopTranslation:
     """Test exit.trailing_stop archetype translation."""
