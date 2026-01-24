@@ -31,7 +31,7 @@ class BigQueryDataService:
         "15m": "candles_5m",  # Use 5m and filter client-side for now
         "1h": "candles_1h",  # Aggregation view from 1m
         "hour": "candles_1h",
-        "4h": "candles_parsed",  # Use candles_parsed with granularity filter (TODO: add candles_4h view)
+        "4h": "candles_4h",  # Aggregation view from 1h
         "1d": "candles_1d",  # Aggregation view from 1m
         "daily": "candles_1d",
     }
