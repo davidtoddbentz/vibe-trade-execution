@@ -1244,6 +1244,169 @@ class TestTrailingStopArchetype:
         trades = result.response.trades
         assert len(trades) >= 1, "Expected at least 1 trade"
 
+    def test_trailing_stop_includes_entry_bar_high(self, backtest_service):
+        """Trailing stop must track highest price INCLUDING the entry bar.
+
+        This test catches a critical bug where highest_since_entry is only
+        initialized on the FIRST BAR AFTER ENTRY, not on the entry bar itself.
+
+        Scenario (after warmup bars):
+        - Entry bar: close=101, HIGH=108 (entry triggers)
+        - Next bar: high=103, close=102 - SHOULD NOT trigger exit
+        - Following bars: price rises further
+        - Later bars: drops to eventually trigger exit
+
+        BUG BEHAVIOR (incorrect):
+        - highest_since_entry = 103 (next bar's high, missing entry bar's 108)
+        - Exit triggers on bar after entry because close < highest - ATR
+
+        CORRECT BEHAVIOR:
+        - highest_since_entry = 108 (entry bar's high)
+        - Exit should NOT trigger until price drops significantly below 108
+        """
+        entry = make_entry_archetype(price_gt(100.0))
+
+        exit_rule = TrailingStop(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=TrailingStopEvent(
+                # Use length=5 for faster warmup, mult=1.0 for tighter stop
+                trail_band=BandSpec(band="keltner", length=5, mult=1.0),
+            ),
+        )
+
+        cards = {
+            "entry": make_card("entry", entry),
+            "exit": make_card("exit", exit_rule),
+        }
+
+        # Warmup bars (need at least length=5 for Keltner to be ready)
+        # All below 100 so no entry during warmup
+        warmup_bars = [
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + i * 60000, o=90, h=92, l=88, c=90, v=1000)
+            for i in range(10)
+        ]
+
+        # Trading bars that expose the bug:
+        # The key is: entry bar has HIGH=108, next bar has HIGH=103
+        # If highest_since_entry is correctly initialized to 108 on entry bar,
+        # then the pullback to 102 won't trigger exit (102 > 108 - ATR*mult for reasonable ATR)
+        # If highest_since_entry starts at 103 (next bar's high), exit may trigger too early
+        base_t = DEFAULT_BASE_TIMESTAMP_MS + 10 * 60000
+        trading_bars = [
+            # Entry bar: close=101 triggers entry, HIGH=108 is the critical value
+            OHLCVBar(t=base_t, o=100, h=108, l=99, c=101, v=1000),
+            # Bar +1: Pullback - high=103, close=102. Should NOT trigger exit
+            OHLCVBar(t=base_t + 60000, o=101, h=103, l=101, c=102, v=1000),
+            # Bar +2 to +4: Price rises, updating highest_since_entry
+            OHLCVBar(t=base_t + 120000, o=102, h=106, l=101, c=105, v=1000),
+            OHLCVBar(t=base_t + 180000, o=105, h=110, l=104, c=109, v=1000),
+            OHLCVBar(t=base_t + 240000, o=109, h=115, l=108, c=114, v=1000),
+            # Bar +5 to +7: Gradual drop to eventually trigger exit
+            OHLCVBar(t=base_t + 300000, o=114, h=114, l=108, c=109, v=1000),
+            OHLCVBar(t=base_t + 360000, o=109, h=110, l=102, c=103, v=1000),
+            OHLCVBar(t=base_t + 420000, o=103, h=104, l=95, c=96, v=1000),
+        ]
+
+        bars = warmup_bars + trading_bars
+
+        result = run_archetype_backtest(
+            backtest_service, "test-trailing-stop-entry-bar", cards, bars
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, f"Expected at least 1 trade, got {len(trades)}"
+
+        # Look at the first trade
+        trade = trades[0]
+
+        # CRITICAL ASSERTION: The trade should be held for more than 1 bar
+        # If exit_bar == entry_bar + 1, the bug is present (exit on immediate next bar)
+        bars_held = trade.exit_bar - trade.entry_bar
+        assert bars_held > 1, (
+            f"BUG DETECTED: Trade exited after only {bars_held} bar(s). "
+            f"Entry bar {trade.entry_bar} (price={trade.entry_price}), "
+            f"Exit bar {trade.exit_bar} (price={trade.exit_price}). "
+            f"highest_since_entry was not initialized with entry bar's high. "
+            f"Exit should occur later when price actually drops below trailing level."
+        )
+
+    def test_trailing_stop_captures_entry_bar_high(self, backtest_service):
+        """Trailing stop must capture entry bar's high via on_fill initialization.
+
+        The lifecycle bug: on_bar_invested only runs AFTER entry bar, so entry
+        bar's high is lost if on_fill doesn't initialize highest_since_entry.
+
+        Test scenario:
+        - Entry bar: close=101 (triggers entry), HIGH=115 (spike high)
+        - Bar 2: close=108, high=105 (lower than entry's spike)
+        - ATR ≈ 4 from warmup, mult=0.5, so trail_distance ≈ 2
+
+        With fix (highest=115 from entry bar):
+        - Exit level = 115 - 2 = 113
+        - Bar 2 close=108 < 113 → EXIT correctly on bar 2
+
+        Without fix (highest=105 from bar 2, missing entry's spike):
+        - Exit level = 105 - 2 = 103
+        - Bar 2 close=108 > 103 → NO EXIT (wrongly stays open)
+
+        This test verifies the fix works by asserting exit happens on bar 2.
+        """
+        entry = make_entry_archetype(price_gt(100.0))
+
+        exit_rule = TrailingStop(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=TrailingStopEvent(
+                trail_band=BandSpec(band="keltner", length=5, mult=0.5),
+            ),
+        )
+
+        cards = {
+            "entry": make_card("entry", entry),
+            "exit": make_card("exit", exit_rule),
+        }
+
+        # Warmup bars with consistent volatility (range ~4)
+        warmup_bars = [
+            OHLCVBar(t=DEFAULT_BASE_TIMESTAMP_MS + i * 60000, o=90, h=92, l=88, c=90, v=1000)
+            for i in range(10)
+        ]
+
+        base_t = DEFAULT_BASE_TIMESTAMP_MS + 10 * 60000
+        trading_bars = [
+            # Entry bar: close=101 triggers entry, HIGH=115 (spike that MUST be captured)
+            OHLCVBar(t=base_t, o=100, h=115, l=99, c=101, v=1000),
+            # Bar 2: close=108 is between 103 (buggy exit) and 113 (correct exit)
+            # This differentiates buggy behavior (no exit) from correct behavior (exit)
+            OHLCVBar(t=base_t + 60000, o=101, h=109, l=105, c=108, v=1000),
+            # If correct: already exited. If buggy: would continue...
+            OHLCVBar(t=base_t + 120000, o=108, h=110, l=106, c=107, v=1000),
+            OHLCVBar(t=base_t + 180000, o=107, h=109, l=105, c=106, v=1000),
+        ]
+
+        bars = warmup_bars + trading_bars
+
+        result = run_archetype_backtest(
+            backtest_service, "test-trailing-entry-high", cards, bars
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, f"Expected at least 1 trade, got {len(trades)}"
+
+        trade = trades[0]
+        bars_held = trade.exit_bar - trade.entry_bar
+
+        # With correct highest=115, exit level=113
+        # Bar 2 close=108 < 113 → should exit immediately (bars_held=1)
+        # If buggy (highest=105, exit level=103), bar 2 close=108 > 103 → no exit
+        assert bars_held == 1, (
+            f"Expected exit on bar 2 (1 bar held) due to correct trailing stop. "
+            f"Got bars_held={bars_held}. Entry bar {trade.entry_bar}, exit bar {trade.exit_bar}. "
+            f"Entry bar HIGH=115 should set highest_since_entry=115, exit level=113. "
+            f"Bar 2 close=108 < 113 should trigger exit."
+        )
+
 
 # =============================================================================
 # Cross Condition Tests

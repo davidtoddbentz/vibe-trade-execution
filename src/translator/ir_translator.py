@@ -104,6 +104,7 @@ class IRTranslator:
         self._state_vars: dict[str, StateVarSpec] = {}
         self._on_bar_hooks: list[StateOp] = []
         self._on_bar_invested_ops: list[StateOp] = []
+        self._on_fill_ops: list[StateOp] = []  # Accumulated from all archetypes
         self._additional_symbols: list[str] = []
         self._exit_counter = 0
         self._sequence_counter = 0
@@ -268,9 +269,10 @@ class IRTranslator:
             on_bar_ops = self._convert_state_ops(typed_archetype.get_on_bar_ops())
             on_bar_invested_ops = self._convert_state_ops(typed_archetype.get_on_bar_invested_ops())
 
-            # Register global hooks
+            # Register global hooks (including on_fill for trailing stop state init)
             self._on_bar_hooks.extend(on_bar_ops)
             self._on_bar_invested_ops.extend(on_bar_invested_ops)
+            self._on_fill_ops.extend(on_fill_ops)
 
             logger.debug(f"Successfully used to_ir() for {archetype}")
             return (local_condition, on_fill_ops, on_bar_ops, on_bar_invested_ops)
@@ -659,6 +661,23 @@ class IRTranslator:
                     tf = context.get("tf", "1h")
                     resolution = self.RESOLUTION_MAP.get(tf.lower(), Resolution.HOUR)
                     break
+
+        # Merge accumulated on_fill_ops from all archetypes (entry + exits) into entry rule
+        # This is critical for trailing stops which need to initialize state on entry fill
+        if entry is not None and self._on_fill_ops:
+            # Deduplicate while preserving order - entry's ops first, then exit's ops
+            seen_ops: set[str] = set()
+            merged_on_fill: list[StateOp] = []
+            for op in entry.on_fill + self._on_fill_ops:
+                op_key = f"{op.type}:{op.state_id}"
+                if op_key not in seen_ops:
+                    seen_ops.add(op_key)
+                    merged_on_fill.append(op)
+            entry = EntryRule(
+                condition=entry.condition,
+                action=entry.action,
+                on_fill=merged_on_fill,
+            )
 
         ir = StrategyIR(
             strategy_id=self.strategy.id,
