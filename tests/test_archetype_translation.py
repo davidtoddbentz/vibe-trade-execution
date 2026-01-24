@@ -62,7 +62,7 @@ class TestTrendPullbackTranslation:
                         "dip": {"kind": "reentry", "edge": "lower"},
                         "trend_gate": {"fast": 20, "slow": 50, "op": ">"},
                     },
-                    "action": {"direction": "long"},
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
                     "risk": {"sl_atr": 2.0},
                 },
             )
@@ -101,7 +101,7 @@ class TestTrendPullbackTranslation:
                         "dip": {"kind": "reentry", "edge": "lower"},
                         "trend_gate": {"fast": 20, "slow": 50, "op": ">"},
                     },
-                    "action": {"direction": "long"},
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
                     "risk": {"sl_atr": 2.0},
                 },
             )
@@ -136,7 +136,7 @@ class TestTrendPullbackTranslation:
                         "dip": {"kind": "reentry", "edge": "lower"},
                         "trend_gate": {"fast": 20, "slow": 50, "op": ">"},
                     },
-                    "action": {"direction": "long"},
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
                     "risk": {"sl_atr": 2.0},
                 },
             )
@@ -182,7 +182,7 @@ class TestTrendPullbackTranslation:
                         "dip": {"kind": "reentry", "edge": "lower"},
                         "trend_gate": {"fast": 20, "slow": 50, "op": ">"},
                     },
-                    "action": {"direction": "long"},
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
                     "risk": {"sl_atr": 2.0},
                 },
             )
@@ -236,7 +236,7 @@ class TestTrailingStopTranslation:
                             "regime": {"metric": "trend_adx", "op": ">", "value": 25},
                         }
                     },
-                    "action": {"direction": "long"},
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
                 },
             ),
             "exit": Card(created_at=NOW, updated_at=NOW, schema_etag="v1", 
@@ -292,7 +292,7 @@ class TestRuleTriggerTranslation:
                             },
                         }
                     },
-                    "action": {"direction": "long"},
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
                 },
             ),
         }
@@ -328,7 +328,7 @@ class TestRuleTriggerTranslation:
                             "regime": {"metric": "trend_adx", "op": ">", "value": 25},
                         }
                     },
-                    "action": {"direction": "long"},
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
                 },
             ),
         }
@@ -363,7 +363,7 @@ class TestRuleTriggerTranslation:
                             "regime": {"metric": "vol_atr_pct", "op": ">", "value": 2.0},
                         }
                     },
-                    "action": {"direction": "long"},
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
                 },
             ),
         }
@@ -410,7 +410,7 @@ class TestIndicatorRegistrationRegression:
                         "dip": {"kind": "reentry", "edge": "upper"},
                         "trend_gate": {"fast": 10, "slow": 20, "op": "<"},  # Short bias
                     },
-                    "action": {"direction": "short"},
+                    "action": {"direction": "short", "position_policy": {"mode": "single"}},
                     "risk": {"sl_atr": 1.5},
                 },
             )
@@ -453,7 +453,7 @@ class TestIndicatorRegistrationRegression:
                         "dip": {"kind": "reentry", "edge": "lower"},
                         "trend_gate": {"fast": 20, "slow": 50, "op": ">"},
                     },
-                    "action": {"direction": "long"},
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
                     "risk": {"sl_atr": 2.0},
                 },
             ),
@@ -508,7 +508,7 @@ class TestCompareConditionTranslation:
                             },
                         }
                     },
-                    "action": {"direction": "long"},
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
                 },
             )
         }
@@ -563,7 +563,7 @@ class TestCompareConditionTranslation:
                             ],
                         }
                     },
-                    "action": {"direction": "long"},
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
                 },
             )
         }
@@ -629,6 +629,7 @@ class TestSizingSpecTranslation:
                     "action": {
                         "direction": "long",
                         "sizing": {"type": "pct_equity", "pct": 5},
+                        "position_policy": {"mode": "single"},
                     },
                 },
             )
@@ -681,6 +682,7 @@ class TestSizingSpecTranslation:
                     "action": {
                         "direction": "short",
                         "sizing": {"type": "pct_equity", "pct": 10},
+                        "position_policy": {"mode": "single"},
                     },
                 },
             )
@@ -729,7 +731,7 @@ class TestSizingSpecTranslation:
                             },
                         }
                     },
-                    "action": {"direction": "long"},  # No sizing
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},  # No sizing
                 },
             )
         }
@@ -786,6 +788,7 @@ class TestFixedSizingModes:
                     "action": {
                         "direction": "long",
                         "sizing": {"type": "fixed_usd", "usd": 5000},
+                        "position_policy": {"mode": "single"},
                     },
                 },
             )
@@ -837,6 +840,7 @@ class TestFixedSizingModes:
                     "action": {
                         "direction": "short",
                         "sizing": {"type": "fixed_usd", "usd": 2500},
+                        "position_policy": {"mode": "single"},
                     },
                 },
             )
@@ -886,6 +890,7 @@ class TestFixedSizingModes:
                     "action": {
                         "direction": "long",
                         "sizing": {"type": "fixed_units", "units": 0.5},
+                        "position_policy": {"mode": "single"},
                     },
                 },
             )
@@ -937,6 +942,7 @@ class TestFixedSizingModes:
                     "action": {
                         "direction": "short",
                         "sizing": {"type": "fixed_units", "units": 1.0},
+                        "position_policy": {"mode": "single"},
                     },
                 },
             )
@@ -986,6 +992,7 @@ class TestFixedSizingModes:
                     "action": {
                         "direction": "long",
                         "sizing": {"type": "pct_equity", "pct": 25},
+                        "position_policy": {"mode": "single"},
                     },
                 },
             )

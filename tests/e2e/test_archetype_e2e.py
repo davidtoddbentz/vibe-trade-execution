@@ -403,7 +403,7 @@ def make_entry_archetype(condition: ConditionSpec, symbol: str = "TESTUSD") -> E
     return EntryRuleTrigger(
         context=ContextSpec(symbol=symbol, tf="1h"),
         event=EventSlot(condition=condition),
-        action=EntryActionSpec(direction="long"),
+        action=EntryActionSpec(direction="long", position_policy=PositionPolicy(mode="single")),
     )
 
 
@@ -415,6 +415,8 @@ def make_entry_archetype_with_sizing(
     position_policy: PositionPolicy | None = None,
 ) -> EntryRuleTrigger:
     """Create EntryRuleTrigger with custom sizing specification."""
+    if position_policy is None:
+        position_policy = PositionPolicy(mode="single")
     return EntryRuleTrigger(
         context=ContextSpec(symbol=symbol, tf="1h"),
         event=EventSlot(condition=condition),
@@ -1188,7 +1190,7 @@ class TestTrendPullbackArchetype:
                 dip=BandEventReentry(kind="reentry", edge="lower"),
                 trend_gate=MASpec(fast=3, slow=5, op=">"),
             ),
-            action=EntryActionSpec(direction="long"),
+            action=EntryActionSpec(direction="long", position_policy=PositionPolicy(mode="single")),
             risk=PositionRiskSpec(sl_atr=2.0),
         )
 
@@ -1953,7 +1955,7 @@ class TestShortPositions:
         entry = EntryRuleTrigger(
             context=ContextSpec(symbol="TESTUSD", tf="1h"),
             event=EventSlot(condition=price_lt(100.0)),
-            action=EntryActionSpec(direction="short"),
+            action=EntryActionSpec(direction="short", position_policy=PositionPolicy(mode="single")),
         )
         cards = {"entry": make_card("entry", entry)}
 
@@ -2647,7 +2649,7 @@ class TestShortPositionsExtended:
         entry = EntryRuleTrigger(
             context=ContextSpec(symbol="TESTUSD", tf="1h"),
             event=EventSlot(condition=price_lt(100.0)),
-            action=EntryActionSpec(direction="short"),
+            action=EntryActionSpec(direction="short", position_policy=PositionPolicy(mode="single")),
         )
         # Take profit when price drops further
         take_profit = make_exit_archetype(price_lt(90.0))
@@ -2671,7 +2673,7 @@ class TestShortPositionsExtended:
         entry = EntryRuleTrigger(
             context=ContextSpec(symbol="TESTUSD", tf="1h"),
             event=EventSlot(condition=price_lt(100.0)),
-            action=EntryActionSpec(direction="short"),
+            action=EntryActionSpec(direction="short", position_policy=PositionPolicy(mode="single")),
         )
         # Stop loss when price rises above entry
         stop_loss = make_exit_archetype(price_gt(105.0))
@@ -3569,7 +3571,7 @@ class TestPositionSizing:
         entry = EntryRuleTrigger(
             context=ContextSpec(symbol="TESTUSD", tf="1h"),
             event=EventSlot(condition=price_gt(100.0)),
-            action=EntryActionSpec(direction="auto"),  # Auto direction
+            action=EntryActionSpec(direction="auto", position_policy=PositionPolicy(mode="single")),  # Auto direction
         )
         cards = {"entry": make_card("entry", entry)}
 
@@ -3851,7 +3853,7 @@ class TestRealisticBTCData:
         entry = EntryRuleTrigger(
             context=ContextSpec(symbol="BTCUSD", tf="1h"),
             event=EventSlot(condition=squeeze),
-            action=EntryActionSpec(direction="long"),
+            action=EntryActionSpec(direction="long", position_policy=PositionPolicy(mode="single")),
         )
         cards = {"entry": make_card("entry", entry)}
 
@@ -3894,7 +3896,7 @@ class TestRealisticBTCData:
         entry = EntryRuleTrigger(
             context=ContextSpec(symbol="BTCUSD", tf="4h"),
             event=EventSlot(condition=combined),
-            action=EntryActionSpec(direction="long"),
+            action=EntryActionSpec(direction="long", position_policy=PositionPolicy(mode="single")),
         )
         cards = {"entry": make_card("entry", entry)}
 
@@ -4377,7 +4379,7 @@ class TestFeesAndSlippage:
         short_entry = EntryRuleTrigger(
             context=ContextSpec(symbol="TESTUSD", tf="1h"),
             event=EventSlot(condition=price_gt(99.0)),
-            action=EntryActionSpec(direction="short"),
+            action=EntryActionSpec(direction="short", position_policy=PositionPolicy(mode="single")),
         )
         cards = {"entry": make_card("entry", short_entry)}
         # Price goes up then drops - good for short

@@ -29,7 +29,7 @@ def make_strategy(
                 "slots": {
                     "context": {"tf": "1h", "symbol": "BTC-USD"},
                     "event": {"condition": {...}},
-                    "action": {"direction": "long"}
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}}
                 }
             }
         })
