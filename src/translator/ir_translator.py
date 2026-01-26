@@ -376,10 +376,11 @@ class IRTranslator:
                 obj["indicator_id"] = ind_id
                 obj["band"] = field
             else:
-                # Regular indicator reference
+                # Regular indicator reference - preserve field for multi-value indicators
                 obj.clear()
                 obj["type"] = "indicator"
                 obj["indicator_id"] = ind_id
+                obj["field"] = field  # Preserve field (value, std_dev, etc.)
         else:
             # Handle RegimeCondition - create required indicators based on metric
             if obj.get("type") == "regime":
