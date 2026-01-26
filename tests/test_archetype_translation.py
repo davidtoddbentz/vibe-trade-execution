@@ -1007,3 +1007,312 @@ class TestFixedSizingModes:
             f"Expected sizing_mode='pct_equity', got '{action.sizing_mode}'"
         )
         assert action.allocation == 0.25
+
+
+class TestSqueezeExpansionTranslation:
+    """Test entry.squeeze_expansion archetype translation.
+
+    SqueezeCondition requires:
+    - BB indicator for bb_width percentile calculation
+    - KC indicator for kc_comp metric (if used)
+    - Additional indicators based on break_rule (donchian or band_edge)
+
+    The translator MUST register these indicators in _process_inline_indicators.
+    """
+
+    def test_squeeze_expansion_registers_bb_indicator(self):
+        """Verify BB indicator is registered for squeeze detection."""
+        strategy = Strategy(
+            id="test",
+            name="Test Strategy",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                {"card_id": "entry", "role": "entry", "enabled": True, "overrides": {}}
+            ],
+        )
+        cards = {
+            "entry": Card(
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                id="entry",
+                type="entry.squeeze_expansion",
+                slots={
+                    "context": {"tf": "4h", "symbol": "BTC-USD"},
+                    "event": {
+                        "squeeze": {
+                            "metric": "bb_width_pctile",
+                            "pctile_min": 10,
+                            "break_rule": "donchian",
+                            "with_trend": False,
+                        }
+                    },
+                    "action": {
+                        "direction": "long",
+                        "position_policy": {"mode": "single"},
+                    },
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        # Check BB indicator is registered (required for bb_width_pctile)
+        indicator_ids = {ind.id for ind in ir.indicators}
+        indicator_types = {ind.type for ind in ir.indicators}
+
+        # Must have BB indicator for squeeze metric
+        assert "BB" in indicator_types, (
+            f"Expected BB indicator for squeeze metric, got types: {indicator_types}"
+        )
+        assert len(indicator_ids) >= 1, f"Expected at least 1 indicator, got {len(indicator_ids)}"
+
+    def test_squeeze_expansion_registers_kc_indicator_for_kc_comp(self):
+        """Verify KC indicator is registered when kc_comp metric is used."""
+        strategy = Strategy(
+            id="test",
+            name="Test Strategy",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                {"card_id": "entry", "role": "entry", "enabled": True, "overrides": {}}
+            ],
+        )
+        cards = {
+            "entry": Card(
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                id="entry",
+                type="entry.squeeze_expansion",
+                slots={
+                    "context": {"tf": "4h", "symbol": "BTC-USD"},
+                    "event": {
+                        "squeeze": {
+                            "metric": "kc_comp",
+                            "pctile_min": 10,
+                            "break_rule": "band_edge",
+                            "with_trend": True,
+                        }
+                    },
+                    "action": {
+                        "direction": "long",
+                        "position_policy": {"mode": "single"},
+                    },
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        # Check KC indicator is registered (required for kc_comp)
+        indicator_types = {ind.type for ind in ir.indicators}
+
+        assert "KC" in indicator_types, (
+            f"Expected KC indicator for kc_comp metric, got types: {indicator_types}"
+        )
+
+
+class TestBreakoutTrendfollowTranslation:
+    """Test entry.breakout_trendfollow archetype translation.
+
+    BreakoutCondition requires:
+    - MAX indicator for N-bar high
+    - MIN indicator for N-bar low
+
+    The translator MUST register these indicators in _process_inline_indicators.
+    """
+
+    def test_breakout_registers_max_min_indicators(self):
+        """Verify MAX and MIN indicators are registered for breakout."""
+        strategy = Strategy(
+            id="test",
+            name="Test Strategy",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                {"card_id": "entry", "role": "entry", "enabled": True, "overrides": {}}
+            ],
+        )
+        cards = {
+            "entry": Card(
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                id="entry",
+                type="entry.breakout_trendfollow",
+                slots={
+                    "context": {"tf": "4h", "symbol": "BTC-USD"},
+                    "event": {
+                        "breakout": {"lookback_bars": 50, "buffer_bps": 10},
+                    },
+                    "action": {
+                        "direction": "long",
+                        "position_policy": {"mode": "single"},
+                    },
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        # Check MAX and MIN indicators are registered
+        indicator_types = {ind.type for ind in ir.indicators}
+
+        assert "MAX" in indicator_types, (
+            f"Expected MAX indicator for breakout, got types: {indicator_types}"
+        )
+        assert "MIN" in indicator_types, (
+            f"Expected MIN indicator for breakout, got types: {indicator_types}"
+        )
+        # Check correct period
+        max_indicators = [ind for ind in ir.indicators if ind.type == "MAX"]
+        assert any(
+            ind.period == 50 for ind in max_indicators
+        ), f"Expected MAX(50) indicator, got: {max_indicators}"
+
+
+class TestTrailingBreakoutTranslation:
+    """Test entry.trailing_breakout archetype translation.
+
+    TrailingBreakoutCondition requires:
+    - Band indicator (BB, KC, or DC) based on band_type
+
+    The translator MUST register these indicators in _process_inline_indicators.
+    """
+
+    def test_trailing_breakout_registers_band_indicator(self):
+        """Verify band indicator is registered for trailing breakout."""
+        strategy = Strategy(
+            id="test",
+            name="Test Strategy",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                {"card_id": "entry", "role": "entry", "enabled": True, "overrides": {}}
+            ],
+        )
+        cards = {
+            "entry": Card(
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                id="entry",
+                type="entry.trailing_breakout",
+                slots={
+                    "context": {"tf": "4h", "symbol": "BTC-USD"},
+                    "event": {
+                        "trail_band": {"band": "keltner", "length": 20, "mult": 1.5},
+                        "trail_trigger": {"kind": "edge_event", "edge": "upper", "op": "cross_out"},
+                    },
+                    "action": {
+                        "direction": "long",
+                        "position_policy": {"mode": "single"},
+                    },
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        # Check KC indicator is registered (keltner -> KC)
+        indicator_types = {ind.type for ind in ir.indicators}
+
+        assert "KC" in indicator_types, (
+            f"Expected KC indicator for keltner trailing breakout, got types: {indicator_types}"
+        )
+
+    def test_trailing_breakout_bollinger_registers_bb_indicator(self):
+        """Verify BB indicator is registered when bollinger band is used."""
+        strategy = Strategy(
+            id="test",
+            name="Test Strategy",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                {"card_id": "entry", "role": "entry", "enabled": True, "overrides": {}}
+            ],
+        )
+        cards = {
+            "entry": Card(
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                id="entry",
+                type="entry.trailing_breakout",
+                slots={
+                    "context": {"tf": "4h", "symbol": "BTC-USD"},
+                    "event": {
+                        "trail_band": {"band": "bollinger", "length": 20, "mult": 2.0},
+                        "trail_trigger": {"kind": "edge_event", "edge": "upper", "op": "cross_out"},
+                    },
+                    "action": {
+                        "direction": "long",
+                        "position_policy": {"mode": "single"},
+                    },
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        # Check BB indicator is registered (bollinger -> BB)
+        indicator_types = {ind.type for ind in ir.indicators}
+
+        assert "BB" in indicator_types, (
+            f"Expected BB indicator for bollinger trailing breakout, got types: {indicator_types}"
+        )
+
+    def test_trailing_breakout_donchian_registers_dc_indicator(self):
+        """Verify DC indicator is registered when donchian band is used."""
+        strategy = Strategy(
+            id="test",
+            name="Test Strategy",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                {"card_id": "entry", "role": "entry", "enabled": True, "overrides": {}}
+            ],
+        )
+        cards = {
+            "entry": Card(
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                id="entry",
+                type="entry.trailing_breakout",
+                slots={
+                    "context": {"tf": "4h", "symbol": "BTC-USD"},
+                    "event": {
+                        "trail_band": {"band": "donchian", "length": 20, "mult": 1.0},
+                        "trail_trigger": {"kind": "edge_event", "edge": "upper", "op": "cross_out"},
+                    },
+                    "action": {
+                        "direction": "long",
+                        "position_policy": {"mode": "single"},
+                    },
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        # Check DC indicator is registered (donchian -> DC)
+        indicator_types = {ind.type for ind in ir.indicators}
+
+        assert "DC" in indicator_types, (
+            f"Expected DC indicator for donchian trailing breakout, got types: {indicator_types}"
+        )

@@ -149,11 +149,14 @@ def make_trending_bars(
 
 def is_lean_available() -> bool:
     """Check if LEAN HTTP endpoint is running."""
-    try:
-        response = httpx.get("http://localhost:8081/health", timeout=2.0)
-        return response.status_code == 200
-    except (httpx.ConnectError, httpx.TimeoutException):
-        return False
+    for port in [8083, 8081]:  # Try common ports
+        try:
+            response = httpx.get(f"http://localhost:{port}/health", timeout=2.0)
+            if response.status_code == 200:
+                return True
+        except (httpx.ConnectError, httpx.TimeoutException):
+            continue
+    return False
 
 
 requires_lean = pytest.mark.skipif(
@@ -182,8 +185,16 @@ def backtest_service(request):
     worker_id = getattr(request.config, "workerinput", {}).get("workerid", "master")
 
     if worker_id == "master":
-        # Single worker mode - use default port
-        port = 8081
+        # Single worker mode - try 8083 first (local dev), then 8081
+        for port in [8083, 8081]:
+            try:
+                response = httpx.get(f"http://localhost:{port}/health", timeout=2.0)
+                if response.status_code == 200:
+                    break
+            except (httpx.ConnectError, httpx.TimeoutException):
+                continue
+        else:
+            port = 8083  # Default to 8083 if neither responds
     else:
         # Multi-worker mode - extract worker number (gw0, gw1, gw2, gw3)
         worker_num = int(worker_id.replace("gw", ""))
@@ -6227,6 +6238,10 @@ class TestBreakoutCondition:
         )
 
         assert result.status == "success", f"BreakoutCondition failed: {result.error}"
+        # Verify entry triggered - price breaks above 5-bar high on bar 8 (105 > 100)
+        assert (
+            len(result.response.trades) >= 1
+        ), f"Expected at least 1 trade for breakout entry, got {len(result.response.trades)}"
 
 
 @requires_lean
@@ -6280,6 +6295,10 @@ class TestSqueezeCondition:
         )
 
         assert result.status == "success", f"SqueezeCondition failed: {result.error}"
+        # Verify entry triggered - low volatility should trigger squeeze entry
+        assert (
+            len(result.response.trades) >= 1
+        ), f"Expected at least 1 trade for squeeze entry, got {len(result.response.trades)}"
 
 
 @requires_lean
@@ -6333,6 +6352,10 @@ class TestTrailingBreakoutCondition:
         )
 
         assert result.status == "success", f"TrailingBreakoutCondition failed: {result.error}"
+        # Verify entry triggered - price breaks above 5-bar high (102 > 100)
+        assert (
+            len(result.response.trades) >= 1
+        ), f"Expected at least 1 trade for trailing breakout entry, got {len(result.response.trades)}"
 
 
 @requires_lean

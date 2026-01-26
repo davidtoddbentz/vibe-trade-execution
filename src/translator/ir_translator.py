@@ -490,13 +490,53 @@ class IRTranslator:
                     )
                 elif metric == "gap_pct":
                     # Gap percentage needs rolling window to access previous close
-                    self._add_indicator(RollingWindow(id="prev_close_rw", period=2))
+                    # Runtime looks up self.rolling_windows.get("prev_close")
+                    self._add_indicator(RollingWindow(id="prev_close", period=2))
 
             # Handle BreakoutCondition (typed) - create MAX/MIN indicators
             elif obj.get("type") == "breakout":
                 lookback = obj.get("lookback_bars") or 50
                 self._add_indicator(Maximum(id=f"max_{lookback}", period=lookback))
                 self._add_indicator(Minimum(id=f"min_{lookback}", period=lookback))
+
+            # Handle SqueezeCondition (typed) - create BB and KC indicators
+            elif obj.get("type") == "squeeze":
+                # SqueezeCondition uses bb_width_pctile or kc_comp metric
+                # Always needs BB for squeeze detection
+                # KC is needed for kc_comp metric comparison
+                squeeze_metric = obj.get("squeeze_metric") or "bb_width_pctile"
+
+                # BB always needed (for bb_width_pctile and as baseline)
+                self._add_indicator(BollingerBands(id="bb", period=20, num_std_dev=2.0))
+
+                # KC needed for kc_comp metric (BB inside KC = squeeze)
+                if squeeze_metric == "kc_comp":
+                    self._add_indicator(KeltnerChannel(id="kc", period=20, multiplier=1.5))
+                else:
+                    # Also add KC for standard squeeze detection
+                    self._add_indicator(KeltnerChannel(id="kc", period=20, multiplier=1.5))
+
+                # Donchian for break_rule=donchian
+                break_rule = obj.get("break_rule") or "donchian"
+                if break_rule == "donchian":
+                    self._add_indicator(DonchianChannel(id="dc", period=20))
+
+            # Handle TrailingBreakoutCondition (typed) - create band indicator
+            elif obj.get("type") == "trailing_breakout":
+                band_type = obj.get("band_type") or "donchian"
+                band_length = obj.get("band_length") or 20
+                band_mult = obj.get("band_mult") or 2.0
+
+                if band_type == "bollinger":
+                    self._add_indicator(
+                        BollingerBands(id=f"bb_{band_length}", period=band_length, num_std_dev=band_mult)
+                    )
+                elif band_type == "keltner":
+                    self._add_indicator(
+                        KeltnerChannel(id=f"kc_{band_length}", period=band_length, multiplier=band_mult)
+                    )
+                elif band_type == "donchian":
+                    self._add_indicator(DonchianChannel(id=f"dc_{band_length}", period=band_length))
 
             # Handle SpreadCondition (typed) - add both symbols to subscription
             elif obj.get("type") == "spread":

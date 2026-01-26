@@ -199,25 +199,21 @@ docker-push-backtest-service:
 	docker push $(BACKTEST_SERVICE_IMAGE)
 	@echo "✅ Push complete"
 
-# Deploy backtest service (warm Cloud Run Service with min-instances)
+# DEPRECATED: Use Terraform instead (vibe-trade-terraform/main.tf)
+# The backtest service is now managed by Terraform for consistency.
+# To deploy: cd ../vibe-trade-terraform && terraform apply
+#
+# This target remains for building/pushing the image only.
+# Terraform manages the Cloud Run service configuration (memory, instances, etc.)
 deploy-backtest-service: docker-build-lean-service docker-push-backtest-service
-	@echo "🚀 Deploying backtest service to Cloud Run..."
-	gcloud run deploy vibe-trade-backtest \
-		--image=$(BACKTEST_SERVICE_IMAGE) \
-		--region=$(REGION) \
-		--project=$(PROJECT_ID) \
-		--platform=managed \
-		--concurrency=1 \
-		--min-instances=1 \
-		--max-instances=10 \
-		--cpu-throttling \
-		--memory=4Gi \
-		--cpu=2 \
-		--timeout=3600 \
-		--no-allow-unauthenticated \
-		--service-account=vibe-trade-lean-job-runner@$(PROJECT_ID).iam.gserviceaccount.com
 	@echo ""
-	@echo "✅ Backtest service deployed!"
+	@echo "⚠️  DEPRECATED: Cloud Run service config is now managed by Terraform"
+	@echo "   Image pushed successfully. To update the service:"
+	@echo "   cd ../vibe-trade-terraform && terraform apply"
+	@echo ""
+	@echo "   Or to force Cloud Run to use the new image:"
+	@echo "   gcloud run services update vibe-trade-backtest --image=$(BACKTEST_SERVICE_IMAGE) --region=$(REGION)"
+	@echo ""
 
 # Deploy both execution service and LEAN image
 deploy-all: docker-build docker-build-lean docker-push docker-push-lean force-revision

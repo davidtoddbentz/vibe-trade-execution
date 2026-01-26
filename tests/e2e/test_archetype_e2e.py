@@ -466,7 +466,7 @@ def is_lean_available() -> bool:
     """Check if LEAN HTTP endpoint is running."""
     for port in [8083, 8081]:  # Try common ports
         try:
-            response = httpx.get(f"http://localhost:{port}/health", timeout=10.0)
+            response = httpx.get(f"http://127.0.0.1:{port}/health", timeout=30.0)
             if response.status_code == 200:
                 return True
         except (httpx.ConnectError, httpx.TimeoutException):
@@ -478,7 +478,7 @@ def get_lean_port() -> int:
     """Get the port LEAN is running on."""
     for port in [8083, 8081]:
         try:
-            response = httpx.get(f"http://localhost:{port}/health", timeout=10.0)
+            response = httpx.get(f"http://127.0.0.1:{port}/health", timeout=30.0)
             if response.status_code == 200:
                 return port
         except (httpx.ConnectError, httpx.TimeoutException):
@@ -506,7 +506,7 @@ def backtest_service(request):
 
     return BacktestService(
         data_service=None,
-        backtest_url=f"http://localhost:{port}/backtest",
+        backtest_url=f"http://127.0.0.1:{port}/backtest",
     )
 
 
@@ -1872,7 +1872,22 @@ class TestBreakoutCondition:
     def test_nbar_breakout_entry(self, backtest_service):
         """Entry when price breaks above N-bar high.
 
-        Breakout condition needs sufficient warmup bars to establish the range.
+        Warmup calculation:
+        - Breakout with lookback_bars=5 uses Maximum(5) and Minimum(5) indicators
+        - Maximum/Minimum warmup = n - 1 = 4 bars
+        - trading_bar = data_bar - 4 (first trading bar at data bar 4)
+
+        Data pattern (10 bars total):
+        - Bars 0-5: Flat at 100 (highs: 101, lows: 99)
+        - Bars 6-9: Breakout to 110, 111, 112, 113
+
+        Bar numbering:
+        - Warmup: bars 0-3 (4 bars)
+        - First trading bar: bar_count=0 at data bar 4
+        - Breakout bar: data bar 6 (close=110 > prev_5bar_max=101)
+        - Entry bar_count = 6 - 4 = 2
+
+        Expected: Entry at bar_count=2 with entry_price=110
         """
         condition = ConditionSpec(
             type="breakout",
@@ -1881,16 +1896,22 @@ class TestBreakoutCondition:
         entry = make_entry_archetype(condition)
         cards = {"entry": make_card("entry", entry)}
 
-        # Need more bars for warmup. Price consolidates then breaks out.
-        # Bars 0-14: consolidation around 100
-        # Bar 15+: breakout above recent highs
-        consolidation = [100, 99, 98, 100, 101, 99, 100, 98, 99, 100, 101, 99, 100, 98, 99]
-        breakout = [110, 111, 112]  # Clear breakout above prior range
-        bars = make_bars(consolidation + breakout)
+        # Simpler data pattern with unambiguous breakout:
+        # Bars 0-5: Flat at 100 (make_bars creates high=101, low=99)
+        # Bar 6+: Clear breakout above previous 5-bar max of 101
+        prices = [100, 100, 100, 100, 100, 100, 110, 111, 112, 113]
+        bars = make_bars(prices)
 
         result = run_archetype_backtest(backtest_service, "test-breakout", cards, bars)
 
         assert result.status == "success", f"BreakoutCondition failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected at least 1 trade from breakout"
+        trade = trades[0]
+        # Warmup=4 (Maximum(5)), first breakout at data bar 6
+        # trading_bar = data_bar - warmup = 6 - 4 = 2
+        assert trade.entry_bar == 2, f"Expected entry at bar 2 (data bar 6), got {trade.entry_bar}"
+        assert trade.entry_price == 110.0, f"Expected entry price 110, got {trade.entry_price}"
 
 
 # =============================================================================
@@ -1905,8 +1926,20 @@ class TestSequenceCondition:
     def test_two_step_sequence(self, backtest_service):
         """Entry requires two conditions to be true in sequence.
 
+        Warmup calculation:
+        - No indicators (only price comparisons), warmup = 0
+        - trading_bar = data_bar (bar_count starts at 0 on data bar 0)
+
         Strategy: First close > 100, then within 5 bars close > 105
-        This tests the sequence/setup-trigger pattern.
+
+        Data pattern (12 bars):
+        - Bars 0-4: Below 100 (95, 96, 97, 98, 99)
+        - Bar 5: close=101 > 100, Step 1 satisfied, advance to step 2
+        - Bars 6-8: close < 105 (102, 103, 104), waiting for step 2
+        - Bar 9: close=106 > 105, Step 2 satisfied, sequence complete
+        - Bar 10: Entry triggered (bar after sequence completes)
+
+        Expected: Entry at bar_count=10 with entry_price=107
         """
         step1 = ConditionSpec(
             type="compare",
@@ -1942,6 +1975,10 @@ class TestSequenceCondition:
         assert result.status == "success", f"Backtest failed: {result.error}"
         trades = result.response.trades
         assert len(trades) >= 1, "Expected entry after sequence completes"
+        trade = trades[0]
+        # No warmup (no indicators), sequence completes on bar 9, entry on bar 10
+        assert trade.entry_bar == 10, f"Expected entry at bar 10, got {trade.entry_bar}"
+        assert trade.entry_price == 107.0, f"Expected entry price 107, got {trade.entry_price}"
 
 
 # =============================================================================
@@ -2020,11 +2057,28 @@ class TestKeltnerChannel:
     """Test Keltner Channel band conditions."""
 
     def test_keltner_lower_band_touch(self, backtest_service):
-        """Entry when price touches lower Keltner band."""
+        """Entry when price touches lower Keltner band.
+
+        Warmup calculation:
+        - KeltnerChannel(10) with mult=1.5
+        - KC uses EMA and ATR internally, both with period=10
+        - KC warmup = n - 1 = 10 - 1 = 9 bars
+        - First tradable bar: data bar 9 (bar_count = 0)
+
+        Data: 25 bars with strong downtrend and volatility
+        - Bars 0-8: warmup period (9 bars)
+        - Bars 9-24: tradable period (bar_count 0-15)
+
+        KC lower band touch:
+        - Lower band = EMA(10) - ATR(10) * mult
+        - Touch occurs when low <= lower band
+        - Use shorter period (10) and tighter mult (1.5) so price can touch band
+        - In strong downtrend (-2% per bar), low can pierce the lower band
+        """
         condition = ConditionSpec(
             type="band_event",
             band_event=BandEventSpec(
-                band=BandSpec(band="keltner", length=20, mult=2.0),
+                band=BandSpec(band="keltner", length=10, mult=1.5),
                 kind="edge_event",
                 edge="lower",
                 event="touch",
@@ -2033,12 +2087,23 @@ class TestKeltnerChannel:
         entry = make_entry_archetype(condition)
         cards = {"entry": make_card("entry", entry)}
 
-        # Downtrend to touch lower KC band
-        bars = make_trending_bars(100.0, 30, -0.01)
+        # Stronger downtrend with realistic volatility to touch lower KC band
+        # Shorter KC period (10) and smaller multiplier (1.5) make touch more likely
+        bars = make_realistic_trending_bars(
+            start_price=100.0,
+            num_bars=25,
+            trend_pct_per_bar=-0.02,  # -2% per bar strong downtrend
+            volatility_pct=0.03,  # 3% volatility for wider H/L range
+        )
 
         result = run_archetype_backtest(backtest_service, "test-kc-touch", cards, bars)
 
         assert result.status == "success", f"KC band touch failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected at least 1 trade for KC lower band touch"
+
+        # Entry should be at bar_count >= 0 (first tradable bar after warmup)
+        assert trades[0].entry_bar >= 0, f"Entry bar should be >= 0, got {trades[0].entry_bar}"
 
 
 # =============================================================================
@@ -2051,7 +2116,25 @@ class TestDonchianChannel:
     """Test Donchian Channel band conditions."""
 
     def test_donchian_upper_band_touch(self, backtest_service):
-        """Entry when price touches upper Donchian band."""
+        """Entry when price touches upper Donchian band.
+
+        Warmup calculation:
+        - DonchianChannel(20) with mult=1.0
+        - DC warmup = n - 1 = 20 - 1 = 19 bars
+        - First tradable bar: data bar 19 (bar_count = 0)
+
+        Data: 30 bars with +1% uptrend from $100
+        - Bars 0-18: warmup period (19 bars)
+        - Bars 19-29: tradable period (bar_count 0-10)
+
+        DC upper band touch in uptrend:
+        - Upper band = highest high over 20 bars
+        - In a steady uptrend, each new bar's high becomes the upper band
+        - Touch is immediate once warmup completes (bar_count = 0)
+
+        Expected entry: bar_count = 0 (data bar 19, close ~ 120.81)
+        Expected exit: bar_count = 10 (end of backtest)
+        """
         condition = ConditionSpec(
             type="band_event",
             band_event=BandEventSpec(
@@ -2070,6 +2153,15 @@ class TestDonchianChannel:
         result = run_archetype_backtest(backtest_service, "test-dc-touch", cards, bars)
 
         assert result.status == "success", f"DC band touch failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected at least 1 trade for DC upper band touch"
+
+        # Entry should be at bar_count = 0 (first bar after warmup completes)
+        # In a steady uptrend, each bar touches the upper band (new high)
+        assert trades[0].entry_bar == 0, f"Expected entry at bar 0, got {trades[0].entry_bar}"
+
+        # Exit at end of backtest (bar_count = 10 for 11 tradable bars)
+        assert trades[0].exit_bar == 10, f"Expected exit at bar 10, got {trades[0].exit_bar}"
 
 
 # =============================================================================
@@ -2286,7 +2378,16 @@ class TestIndicatorComparison:
     """Test comparing two indicators."""
 
     def test_ema_vs_sma(self, backtest_service):
-        """Entry when EMA > SMA (momentum)."""
+        """Entry when EMA(10) > SMA(20) (momentum comparison).
+
+        Warmup calculation:
+        - EMA(10): warmup = 10 - 1 = 9 (WarmUpPeriod = n)
+        - SMA(20): warmup = 20 - 1 = 19 (WarmUpPeriod = n)
+        - Max warmup = 19
+        - First trading bar: bar_count=0 at data bar 19
+
+        In an uptrend, EMA leads SMA and condition is true from first trading bar.
+        """
         condition = ConditionSpec(
             type="compare",
             compare=CompareSpec(
@@ -2304,6 +2405,13 @@ class TestIndicatorComparison:
         result = run_archetype_backtest(backtest_service, "test-ema-sma", cards, bars)
 
         assert result.status == "success", f"EMA vs SMA failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, "Expected at least 1 trade"
+        trade = trades[0]
+        # Entry on first trading bar (bar_count=0) when EMA > SMA
+        assert trade.entry_bar == 0, f"Expected entry at trading bar 0, got {trade.entry_bar}"
+        # Exit at end: data bar 39 = trading bar 20 (39-19=20)
+        assert trade.exit_bar == 20, f"Expected exit at trading bar 20, got {trade.exit_bar}"
 
 
 # =============================================================================
@@ -2318,8 +2426,19 @@ class TestMultiIndicatorStrategies:
     def test_trend_plus_momentum(self, backtest_service):
         """Entry when trend is up AND momentum is positive.
 
-        Trend: EMA10 > EMA20
+        Trend: EMA10 crosses above EMA20
         Momentum: RSI > 50
+
+        Warmup calculation:
+        - EMA(10): warmup = 10 - 1 = 9
+        - EMA(20): warmup = 20 - 1 = 19
+        - RSI(14): warmup = 14 (WarmUpPeriod = n + 1 = 15)
+        - Max warmup = 19
+        - First trading bar: bar_count=0 at data bar 19
+
+        Note: Cross conditions require the condition to transition from false to true.
+        In a steady uptrend, EMA10 may already be above EMA20 when indicators become ready,
+        so the cross may not trigger until later in the data series.
         """
         trend = ConditionSpec(
             type="cross",
@@ -2349,6 +2468,8 @@ class TestMultiIndicatorStrategies:
 
         result = run_archetype_backtest(backtest_service, "test-multi-ind", cards, bars)
 
+        # This test verifies the strategy compiles and runs without error.
+        # Cross condition may or may not trigger depending on EMA positioning at warmup.
         assert result.status == "success", f"Multi-indicator failed: {result.error}"
 
 
@@ -2426,7 +2547,15 @@ class TestGapCondition:
     """Test gap-based entry conditions."""
 
     def test_gap_up_entry(self, backtest_service):
-        """Entry when gap_pct > threshold (gap up)."""
+        """Entry when gap_pct > threshold (gap up).
+
+        Warmup: RollingWindow(period=2) for gap_pct, warmup = n - 1 = 1 bar
+        Data bars: [100, 101, 102, 105(gap)]
+        Bar 0: 100, warming up RollingWindow (not ready)
+        Bar 1: 101, RollingWindow ready, gap = (101-100)/100 = 1%, not > 2%
+        Bar 2: 102, gap = (102-101)/101 = 0.99%, not > 2%
+        Bar 3: 105, gap = (105-102)/102 = 2.94%, > 2%, ENTRY
+        """
         condition = ConditionSpec(
             type="regime",
             regime=RegimeSpec(
@@ -2468,6 +2597,31 @@ class TestTrailingStateCondition:
         """Entry with trailing state tracking for exit.
 
         Uses TrailingStateSpec which tracks highs/lows and triggers on ATR-based pullback.
+
+        Warmup calculation:
+            - Entry: price_gt(100.0) - no indicator, warmup = 0
+            - Exit: trailing_state with ATR(10) - ATR warmup = n - 1 = 9 bars
+
+        Data pattern (18 bars total):
+            Bars 0-8: Warmup for ATR(10), prices hover around 95-99, below entry threshold
+            Bar 9:  close=95, ATR ready, below threshold (no entry)
+            Bar 10: close=101, above threshold -> ENTRY
+            Bar 11: close=105, in position, tracking high=105
+            Bar 12: close=110, tracking high=110
+            Bar 13: close=115, tracking high=115 (peak)
+            Bar 14: close=112, still above trailing stop
+            Bar 15: close=108, still above trailing stop
+            Bar 16: close=104, still above trailing stop
+            Bar 17: close=100, closes at end of data
+
+        The trailing state condition tracks the highest high since entry and exits
+        when low drops 2*ATR below that high. With the test data having small
+        price variations (~5% range), ATR will be small enough that the trailing
+        stop may or may not trigger depending on the actual ATR calculation.
+
+        Expected:
+            - Strategy runs successfully
+            - At least 1 trade (entry on bar 10 or 11 depending on bar counting)
         """
         # TrailingStateSpec tracks a state variable and triggers based on ATR
         condition = ConditionSpec(
@@ -2491,12 +2645,21 @@ class TestTrailingStateCondition:
             "trailing_exit": make_card("trailing_exit", exit_rule),
         }
 
-        # Price rises then falls back
-        bars = make_bars([95, 101, 105, 110, 115, 112, 108, 104])
+        # 18 bars: 9 warmup bars (below threshold) + 9 trading bars
+        # Warmup bars at 95-99 to allow ATR calculation without triggering entry
+        warmup_prices = [95, 96, 97, 98, 99, 98, 97, 96, 95]  # 9 bars for ATR warmup
+        trading_prices = [95, 101, 105, 110, 115, 112, 108, 104, 100]  # Entry at 101, rise to 115, fall
+        bars = make_bars(warmup_prices + trading_prices)
 
         result = run_archetype_backtest(backtest_service, "test-trailing-state", cards, bars)
 
         assert result.status == "success", f"Trailing state failed: {result.error}"
+        trades = result.response.trades
+        assert len(trades) >= 1, f"Expected at least 1 trade, got {len(trades)}"
+
+        # Verify entry happened after warmup period
+        trade = trades[0]
+        assert trade.entry_bar >= 9, f"Entry should be after ATR warmup (bar 9+), got {trade.entry_bar}"
 
 
 # =============================================================================
@@ -2740,6 +2903,7 @@ class TestRealisticPatterns:
             action=EntryActionSpec(
                 direction="long",
                 sizing=SizingSpec(type="fixed_usd", usd=100.0),
+                position_policy=PositionPolicy(mode="single"),
             ),
         )
         cards = {"entry": make_card("entry", entry)}
@@ -4002,7 +4166,24 @@ class TestRealisticBTCData:
     """Tests simulating realistic BTC price patterns."""
 
     def test_btc_consolidation_breakout(self, backtest_service):
-        """Realistic BTC consolidation then breakout pattern."""
+        """Realistic BTC consolidation then breakout pattern.
+
+        Warmup calculation:
+        - SqueezeSpec with metric="bb_width_pctile" and break_rule="donchian":
+          - BB(20): warmup = 20 - 1 = 19
+          - KC(20): warmup = 20 - 1 = 19
+          - DC(20): warmup = 20 - 1 = 19
+        - with_trend=True may add EMA indicators (EMA(20), EMA(50)):
+          - EMA(20): warmup = 20 - 1 = 19
+          - EMA(50): warmup = 50 - 1 = 49
+        - bb_width_pctile uses rolling window with lookback (default 100 bars)
+        - Max warmup = 49 (from EMA(50)) + additional bars for percentile window
+
+        Data: 29 bars (25 consolidation + 4 breakout)
+        - This test verifies the strategy compiles and runs without error.
+        - The squeeze condition checks for BB narrowing inside KC with Donchian breakout.
+        - Entry may or may not trigger depending on the exact price patterns.
+        """
         # Squeeze condition for consolidation
         squeeze = ConditionSpec(
             type="squeeze",
@@ -4035,7 +4216,26 @@ class TestRealisticBTCData:
         assert result.status == "success", f"BTC breakout test failed: {result.error}"
 
     def test_btc_mean_reversion_volume_confirm(self, backtest_service):
-        """BTC mean reversion with volume confirmation."""
+        """BTC mean reversion with volume confirmation.
+
+        Warmup calculation:
+        - RSI(14): warmup = 14 (WarmUpPeriod = n + 1 = 15)
+        - Volume spike with lookback_bars=20 uses Vol SMA:
+          - Volume SMA(20): warmup = 20 - 1 = 19
+        - Max warmup = 19 (from Volume SMA)
+        - First tradable bar: data bar 19 (bar_count = 0)
+
+        Data: 33 bars total (30 downtrend + 3 volume spike bars)
+        - Bars 0-18: warmup period (19 bars)
+        - Bars 19-32: tradable period (bar_count 0-13)
+
+        Entry conditions:
+        - RSI crosses below 30 (oversold)
+        - AND volume > 1.5x SMA(20) (volume spike)
+
+        This test verifies the strategy compiles and runs with combined conditions.
+        Entry may or may not trigger depending on exact RSI and volume calculations.
+        """
         # Oversold RSI with volume spike
         rsi_oversold = ConditionSpec(
             type="cross",

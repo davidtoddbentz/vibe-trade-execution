@@ -25,6 +25,7 @@ from vibe_trade_shared.models.data import OHLCVBar
 from src.models.lean_backtest import (
     BacktestConfig,
     BacktestDataInput,
+    EquityPoint,
     LEANBacktestRequest,
     LEANBacktestResponse,
 )
@@ -275,6 +276,8 @@ class BacktestService:
                     start_date=lean_start_date.date(),
                     end_date=request.end_date.date(),
                     initial_cash=request.initial_cash,
+                    # Pass user's actual start date to prevent trades during warmup
+                    trading_start_date=request.start_date.date(),
                 ),
                 additional_data=additional_data_inputs,
             )
@@ -330,32 +333,55 @@ class BacktestService:
                 "average_loss": 0,  # Would need to calculate
             } if summary else None
 
-            # Transform equity curve from flat list to EquityPoint format expected by UI
+            # Transform equity curve to EquityPoint format expected by UI
             equity_curve_points = []
             if response.equity_curve and len(response.equity_curve) > 0:
-                num_points = len(response.equity_curve)
-                # Generate timestamps evenly spaced between start and end dates
-                start_ts = request.start_date.timestamp()
-                end_ts = request.end_date.timestamp()
-                interval = (end_ts - start_ts) / max(num_points - 1, 1)
+                first_point = response.equity_curve[0]
 
-                peak_equity = request.initial_cash
-                for i, equity in enumerate(response.equity_curve):
-                    timestamp = start_ts + (i * interval)
-                    time_str = datetime.fromtimestamp(timestamp).isoformat()
+                # Check if we have structured data (EquityPoint) or legacy flat list
+                if isinstance(first_point, EquityPoint):
+                    # New format: EquityPoint objects - use actual data
+                    for point in response.equity_curve:
+                        equity_curve_points.append({
+                            "time": point.time,
+                            "equity": point.equity,
+                            "cash": point.cash,
+                            "holdings_value": point.holdings,
+                            "drawdown": point.drawdown,
+                        })
+                elif isinstance(first_point, dict):
+                    # Dict format from LEAN (raw JSON) - use actual data
+                    for point in response.equity_curve:
+                        equity_curve_points.append({
+                            "time": point.get("time", ""),
+                            "equity": point.get("equity", 0),
+                            "cash": point.get("cash", 0),
+                            "holdings_value": point.get("holdings", 0),
+                            "drawdown": point.get("drawdown", 0),
+                        })
+                else:
+                    # Legacy format: flat list of equity floats - reconstruct
+                    num_points = len(response.equity_curve)
+                    start_ts = request.start_date.timestamp()
+                    end_ts = request.end_date.timestamp()
+                    interval = (end_ts - start_ts) / max(num_points - 1, 1)
 
-                    # Track peak for drawdown calculation
-                    if equity > peak_equity:
-                        peak_equity = equity
-                    drawdown = (peak_equity - equity) / peak_equity if peak_equity > 0 else 0
+                    peak_equity = request.initial_cash
+                    for i, equity in enumerate(response.equity_curve):
+                        timestamp = start_ts + (i * interval)
+                        time_str = datetime.fromtimestamp(timestamp).isoformat()
 
-                    equity_curve_points.append({
-                        "time": time_str,
-                        "equity": equity,
-                        "cash": 0,  # Not tracked separately in LEAN response
-                        "holdings_value": equity,  # Approximate as total equity
-                        "drawdown": drawdown,
-                    })
+                        if equity > peak_equity:
+                            peak_equity = equity
+                        drawdown = (peak_equity - equity) / peak_equity if peak_equity > 0 else 0
+
+                        equity_curve_points.append({
+                            "time": time_str,
+                            "equity": equity,
+                            "cash": 0,  # Not available in legacy format
+                            "holdings_value": equity,  # Approximate
+                            "drawdown": drawdown,
+                        })
 
             results = {
                 "trades": ui_trades,

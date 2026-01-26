@@ -43,9 +43,14 @@ class BacktestDataInput(BaseModel):
 class BacktestConfig(BaseModel):
     """Configuration for backtest execution."""
 
-    start_date: date
+    start_date: date  # LEAN data processing start (may include warmup)
     end_date: date
     initial_cash: float = Field(default=100000.0, ge=0)
+    trading_start_date: date | None = Field(
+        default=None,
+        description="When trading is allowed to begin (user's actual start date). "
+        "If None, uses start_date. Used to prevent trades during warmup period.",
+    )
 
 
 class LEANBacktestRequest(BaseModel):
@@ -79,6 +84,20 @@ class Trade(BaseModel):
     pnl_pct: float | None = Field(default=None, description="Profit/loss as percentage")
 
 
+
+class EquityPoint(BaseModel):
+    """Single point on equity curve with full portfolio breakdown.
+
+    Matches the structure from StrategyRuntime._track_equity().
+    """
+
+    time: str  # ISO format timestamp
+    equity: float  # Total portfolio value
+    cash: float  # Cash balance
+    holdings: float  # Holdings value
+    drawdown: float  # Current drawdown percentage
+
+
 class BacktestSummary(BaseModel):
     """Summary metrics from backtest."""
 
@@ -100,5 +119,6 @@ class LEANBacktestResponse(BaseModel):
     status: Literal["success", "error"]
     trades: list[Trade] = Field(default_factory=list)
     summary: BacktestSummary | None = None
-    equity_curve: list[float] | None = None
+    # Support both formats: list[EquityPoint] (full data) or list[float] (legacy)
+    equity_curve: list[EquityPoint] | list[float] | None = None
     error: str | None = None
