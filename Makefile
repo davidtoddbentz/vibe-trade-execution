@@ -188,7 +188,9 @@ deploy-lean: docker-build-push-lean
 docker-build-lean-service:
 	@echo "🏗️  Building backtest service image from vibe-trade-lean..."
 	@echo "   Image: $(BACKTEST_SERVICE_IMAGE)"
-	@cd ../vibe-trade-lean && DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
+	@GITHUB_TOKEN=$${GITHUB_TOKEN:-$$(gh auth token 2>/dev/null || echo "")}; \
+	cd ../vibe-trade-lean && DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
+		--build-arg GITHUB_TOKEN="$$GITHUB_TOKEN" \
 		-f Dockerfile.service \
 		-t $(BACKTEST_SERVICE_IMAGE) \
 		.
