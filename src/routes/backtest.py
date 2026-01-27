@@ -163,6 +163,8 @@ class BacktestRequestModel(BaseModel):
     # Parameter overrides: card_id -> path -> value
     # e.g., {"card123": {"event.dip_band.mult": 2.5}}
     card_overrides: dict[str, dict[str, float]] | None = None
+    # Inline bars for testing (bypasses BigQuery)
+    inline_bars: list[dict[str, Any]] | None = None
 
 
 class BacktestStatus(str, Enum):
@@ -269,7 +271,8 @@ async def _run_backtest(
     """
     from vibe_trade_shared import Backtest, BacktestRepository
 
-    from src.service.backtest_service import BacktestRequest, BacktestService
+    from src.models.lean_backtest import BacktestConfig
+    from src.service.backtest_service import BacktestService
     from src.service.bigquery_data_service import BigQueryDataService
 
     # Determine backtest service URL from environment
@@ -291,6 +294,28 @@ async def _run_backtest(
         emulator_host=emulator_host,
     )
 
+    # Convert inline_bars dicts to OHLCVBar objects if provided
+    effective_data_service = data_service
+    if request.inline_bars:
+        from vibe_trade_shared.models.data import OHLCVBar
+        from src.service.data_service import MockDataService
+
+        inline_bars = [
+            OHLCVBar(
+                t=bar["timestamp"],
+                o=bar["open"],
+                h=bar["high"],
+                l=bar["low"],
+                c=bar["close"],
+                v=bar["volume"],
+            )
+            for bar in request.inline_bars
+        ]
+        mock_ds = MockDataService()
+        mock_ds.seed(symbol, resolution, inline_bars)
+        effective_data_service = mock_ds
+        logger.info(f"Backtest {backtest_id}: Using {len(inline_bars)} inline bars via MockDataService")
+
     # Get auth token for Cloud Run service-to-service calls
     auth_token = None
     if backtest_url and backtest_url.startswith("https://"):
@@ -304,24 +329,23 @@ async def _run_backtest(
             logger.info(f"Backtest {backtest_id}: Got auth token for {audience}")
 
     service = BacktestService(
-        data_service=data_service,
+        data_service=effective_data_service,
         backtest_url=backtest_url,
         auth_token=auth_token,
     )
 
     result = service.run_backtest(
-        BacktestRequest(
-            strategy_id=request.strategy_id,
-            start_date=request.start_date,
-            end_date=request.end_date,
+        strategy=strategy,
+        cards=cards,
+        config=BacktestConfig(
+            start_date=request.start_date.date(),
+            end_date=request.end_date.date(),
             symbol=symbol,
             resolution=resolution,
             initial_cash=request.initial_cash,
             fee_pct=request.fee_pct,
             slippage_pct=request.slippage_pct,
         ),
-        strategy,
-        cards,
     )
 
     status = BacktestStatus.COMPLETED if result.status == "success" else BacktestStatus.FAILED
