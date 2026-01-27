@@ -15,8 +15,9 @@ Data Flow:
 
 import logging
 import os
+import warnings
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -159,6 +160,240 @@ class BacktestService:
 
     def run_backtest(
         self,
+        strategy: Any,
+        cards: dict[str, Any],
+        config: BacktestConfig,
+    ) -> BacktestResult:
+        """Run a backtest for a strategy using the clean 3-param interface.
+
+        Always translates strategy+cards to IR, always fetches data via data_service.
+        Uses BacktestConfig for all execution parameters.
+
+        Args:
+            strategy: Strategy model from vibe-trade-shared (has .id attribute)
+            cards: Dict mapping card_id to Card objects
+            config: BacktestConfig with symbol, resolution, dates, fees, etc.
+
+        Returns:
+            BacktestResult with status and results
+        """
+        strategy_id = getattr(strategy, "id", "unknown")
+        # Convert date to datetime for date math and result fields
+        start_datetime = datetime.combine(
+            config.start_date, datetime.min.time(), tzinfo=timezone.utc
+        )
+        end_datetime = datetime.combine(
+            config.end_date, datetime.min.time(), tzinfo=timezone.utc
+        )
+
+        try:
+            logger.info(f"Starting backtest for strategy {strategy_id}")
+
+            # Step 1: Translate strategy to IR
+            logger.info("Translating strategy to IR...")
+            translator = IRTranslator(strategy, cards)
+            strategy_ir = translator.translate()
+
+            if not strategy_ir:
+                return BacktestResult(
+                    status="error",
+                    strategy_id=strategy_id,
+                    start_date=start_datetime,
+                    end_date=end_datetime,
+                    error="Failed to translate strategy to IR",
+                )
+
+            # Step 2: Fetch market data via data_service (with warmup)
+            if self.data_service is None:
+                return BacktestResult(
+                    status="error",
+                    strategy_id=strategy_id,
+                    start_date=start_datetime,
+                    end_date=end_datetime,
+                    error="No data_service configured",
+                )
+
+            ir_dict = strategy_ir.model_dump()
+            warmup_bars = _calculate_warmup_bars(ir_dict)
+            bar_duration = _resolution_to_timedelta(config.resolution)
+            warmup_start = start_datetime - (warmup_bars * bar_duration)
+
+            logger.info(
+                f"Fetching data from DataService for {config.symbol}... "
+                f"(with {warmup_bars} warmup bars starting {warmup_start.date()})"
+            )
+            bars = self.data_service.get_ohlcv(
+                symbol=config.symbol,
+                resolution=config.resolution,
+                start=warmup_start,
+                end=end_datetime,
+            )
+            logger.info(f"Fetched {len(bars)} bars (including warmup)")
+
+            # Step 3: Build LEAN request
+            # Apply backtest-level trading costs to the IR
+            strategy_ir = strategy_ir.model_copy(
+                update={
+                    "fee_pct": config.fee_pct,
+                    "slippage_pct": config.slippage_pct,
+                }
+            )
+
+            ir_dict = strategy_ir.model_dump()
+            ir_json = strategy_ir.model_dump_json(indent=2)
+
+            lean_request = LEANBacktestRequest(
+                strategy_ir=ir_dict,
+                data=BacktestDataInput(
+                    symbol=config.symbol,
+                    resolution=config.resolution,
+                    bars=bars,
+                ),
+                config=BacktestConfig(
+                    # Warmup start date for LEAN data processing
+                    start_date=warmup_start.date(),
+                    end_date=config.end_date,
+                    initial_cash=config.initial_cash,
+                    # User's original start date prevents trades during warmup
+                    trading_start_date=config.start_date,
+                    symbol=config.symbol,
+                    resolution=config.resolution,
+                    fee_pct=config.fee_pct,
+                    slippage_pct=config.slippage_pct,
+                ),
+            )
+
+            # Step 4: Call LEAN container
+            logger.info(f"Calling LEAN at {self.backtest_url}")
+            response = self._call_lean_endpoint(lean_request)
+
+            if response.status == "error" or response.error:
+                return BacktestResult(
+                    status="error",
+                    strategy_id=strategy_id,
+                    start_date=start_datetime,
+                    end_date=end_datetime,
+                    error=response.error,
+                    algorithm_code=ir_json,
+                    response=response,
+                )
+
+            # Build results from response in format expected by UI
+            summary = response.summary
+
+            # Transform trades to UI format
+            ui_trades = []
+            for i, t in enumerate(response.trades):
+                ui_trades.append({
+                    "trade_id": f"trade_{i}",
+                    "symbol": config.symbol,
+                    "direction": "buy" if t.direction == "long" else "sell",
+                    "entry_time": t.entry_time.isoformat() if t.entry_time else None,
+                    "entry_price": t.entry_price,
+                    "entry_quantity": t.quantity,
+                    "exit_time": t.exit_time.isoformat() if t.exit_time else None,
+                    "exit_price": t.exit_price,
+                    "pnl": t.pnl,
+                    "pnl_percent": t.pnl_pct,
+                    "exit_reason": t.exit_reason,
+                })
+
+            # Transform statistics to UI format
+            win_rate = (summary.winning_trades / summary.total_trades) if summary and summary.total_trades > 0 else 0
+            statistics = {
+                "total_return": summary.total_pnl_pct / 100 if summary else 0,  # UI expects decimal
+                "annual_return": 0,  # Would need more data to calculate
+                "sharpe_ratio": summary.sharpe_ratio if summary else None,
+                "max_drawdown": summary.max_drawdown_pct / 100 if summary else 0,  # UI expects decimal
+                "total_trades": summary.total_trades if summary else 0,
+                "winning_trades": summary.winning_trades if summary else 0,
+                "losing_trades": summary.losing_trades if summary else 0,
+                "win_rate": win_rate,
+                "net_profit": summary.total_pnl if summary else 0,
+                "average_win": 0,  # Would need to calculate
+                "average_loss": 0,  # Would need to calculate
+            } if summary else None
+
+            # Transform equity curve to EquityPoint format expected by UI
+            equity_curve_points = []
+            if response.equity_curve and len(response.equity_curve) > 0:
+                first_point = response.equity_curve[0]
+
+                # Check if we have structured data (EquityPoint) or legacy flat list
+                if isinstance(first_point, EquityPoint):
+                    # New format: EquityPoint objects - use actual data
+                    for point in response.equity_curve:
+                        equity_curve_points.append({
+                            "time": point.time,
+                            "equity": point.equity,
+                            "cash": point.cash,
+                            "holdings_value": point.holdings,
+                            "drawdown": point.drawdown,
+                        })
+                elif isinstance(first_point, dict):
+                    # Dict format from LEAN (raw JSON) - use actual data
+                    for point in response.equity_curve:
+                        equity_curve_points.append({
+                            "time": point.get("time", ""),
+                            "equity": point.get("equity", 0),
+                            "cash": point.get("cash", 0),
+                            "holdings_value": point.get("holdings", 0),
+                            "drawdown": point.get("drawdown", 0),
+                        })
+                else:
+                    # Legacy format: flat list of equity floats - reconstruct
+                    num_points = len(response.equity_curve)
+                    start_ts = start_datetime.timestamp()
+                    end_ts = end_datetime.timestamp()
+                    interval = (end_ts - start_ts) / max(num_points - 1, 1)
+
+                    peak_equity = config.initial_cash
+                    for i, equity in enumerate(response.equity_curve):
+                        timestamp = start_ts + (i * interval)
+                        time_str = datetime.fromtimestamp(timestamp).isoformat()
+
+                        if equity > peak_equity:
+                            peak_equity = equity
+                        drawdown = (peak_equity - equity) / peak_equity if peak_equity > 0 else 0
+
+                        equity_curve_points.append({
+                            "time": time_str,
+                            "equity": equity,
+                            "cash": 0,  # Not available in legacy format
+                            "holdings_value": equity,  # Approximate
+                            "drawdown": drawdown,
+                        })
+
+            results = {
+                "trades": ui_trades,
+                "statistics": statistics,
+                "equity_curve": equity_curve_points,
+            }
+
+            return BacktestResult(
+                status="success",
+                strategy_id=strategy_id,
+                start_date=start_datetime,
+                end_date=end_datetime,
+                results=results,
+                algorithm_code=ir_json,
+                response=response,
+                message=f"Backtest completed: {summary.total_trades if summary else 0} trades, "
+                f"{summary.total_pnl_pct if summary else 0:.2f}% return",
+            )
+
+        except Exception as e:
+            logger.error(f"Backtest failed: {e}", exc_info=True)
+            return BacktestResult(
+                status="error",
+                strategy_id=strategy_id,
+                start_date=start_datetime,
+                end_date=end_datetime,
+                error=str(e),
+            )
+
+    def run_backtest_legacy(
+        self,
         request: BacktestRequest,
         strategy: Any,  # Strategy from vibe-trade-shared
         cards: dict[str, Any],  # Cards from vibe-trade-shared (card_id -> Card)
@@ -166,7 +401,10 @@ class BacktestService:
         strategy_ir: Any | None = None,  # Pre-built StrategyIR (for testing)
         additional_bars: dict[str, list[OHLCVBar]] | None = None,  # For multi-symbol strategies
     ) -> BacktestResult:
-        """Run a backtest for a strategy.
+        """Legacy backtest interface. Use run_backtest() for new code.
+
+        Deprecated: This method will be removed in a future release.
+        Callers should migrate to run_backtest(strategy, cards, config).
 
         Args:
             request: Backtest request parameters
@@ -178,6 +416,53 @@ class BacktestService:
 
         Returns:
             BacktestResult with status and results
+        """
+        warnings.warn(
+            "run_backtest_legacy() is deprecated. Use run_backtest(strategy, cards, config) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+        # If strategy_ir is provided or inline_bars without data_service,
+        # fall back to the old implementation that supports those paths
+        if strategy_ir is not None or additional_bars is not None:
+            return self._run_backtest_legacy_impl(
+                request, strategy, cards, inline_bars, strategy_ir, additional_bars
+            )
+
+        # If inline_bars provided but no data_service, create a MockDataService
+        if inline_bars is not None and self.data_service is None:
+            from src.service.data_service import MockDataService
+
+            mock_ds = MockDataService()
+            mock_ds.seed(request.symbol, request.resolution, inline_bars)
+            self.data_service = mock_ds
+
+        # Build BacktestConfig from legacy BacktestRequest and delegate
+        config = BacktestConfig(
+            start_date=request.start_date.date() if isinstance(request.start_date, datetime) else request.start_date,
+            end_date=request.end_date.date() if isinstance(request.end_date, datetime) else request.end_date,
+            initial_cash=request.initial_cash,
+            symbol=request.symbol,
+            resolution=request.resolution,
+            fee_pct=request.fee_pct,
+            slippage_pct=request.slippage_pct,
+        )
+        return self.run_backtest(strategy, cards, config)
+
+    def _run_backtest_legacy_impl(
+        self,
+        request: BacktestRequest,
+        strategy: Any,
+        cards: dict[str, Any],
+        inline_bars: list[OHLCVBar] | None = None,
+        strategy_ir: Any | None = None,
+        additional_bars: dict[str, list[OHLCVBar]] | None = None,
+    ) -> BacktestResult:
+        """Original run_backtest implementation for legacy callers that need
+        strategy_ir bypass or additional_bars support.
+
+        This method preserves the old behavior exactly.
         """
         try:
             logger.info(f"Starting backtest for strategy {request.strategy_id}")
@@ -237,10 +522,7 @@ class BacktestService:
                 )
 
             # Step 3: Build LEAN request with inline data
-            # TODO: For large datasets, upload to GCS and use gcs_uri instead
-
             # Apply backtest-level trading costs to the IR
-            # Use model_copy to update immutable Pydantic model
             strategy_ir = strategy_ir.model_copy(
                 update={
                     "fee_pct": request.fee_pct,
@@ -272,11 +554,9 @@ class BacktestService:
                     bars=bars,
                 ),
                 config=BacktestConfig(
-                    # Use lean_start_date to include warmup period in LEAN's processing
                     start_date=lean_start_date.date(),
                     end_date=request.end_date.date(),
                     initial_cash=request.initial_cash,
-                    # Pass user's actual start date to prevent trades during warmup
                     trading_start_date=request.start_date.date(),
                 ),
                 additional_data=additional_data_inputs,
@@ -320,17 +600,17 @@ class BacktestService:
             # Transform statistics to UI format
             win_rate = (summary.winning_trades / summary.total_trades) if summary and summary.total_trades > 0 else 0
             statistics = {
-                "total_return": summary.total_pnl_pct / 100 if summary else 0,  # UI expects decimal
-                "annual_return": 0,  # Would need more data to calculate
+                "total_return": summary.total_pnl_pct / 100 if summary else 0,
+                "annual_return": 0,
                 "sharpe_ratio": summary.sharpe_ratio if summary else None,
-                "max_drawdown": summary.max_drawdown_pct / 100 if summary else 0,  # UI expects decimal
+                "max_drawdown": summary.max_drawdown_pct / 100 if summary else 0,
                 "total_trades": summary.total_trades if summary else 0,
                 "winning_trades": summary.winning_trades if summary else 0,
                 "losing_trades": summary.losing_trades if summary else 0,
                 "win_rate": win_rate,
                 "net_profit": summary.total_pnl if summary else 0,
-                "average_win": 0,  # Would need to calculate
-                "average_loss": 0,  # Would need to calculate
+                "average_win": 0,
+                "average_loss": 0,
             } if summary else None
 
             # Transform equity curve to EquityPoint format expected by UI
@@ -338,9 +618,7 @@ class BacktestService:
             if response.equity_curve and len(response.equity_curve) > 0:
                 first_point = response.equity_curve[0]
 
-                # Check if we have structured data (EquityPoint) or legacy flat list
                 if isinstance(first_point, EquityPoint):
-                    # New format: EquityPoint objects - use actual data
                     for point in response.equity_curve:
                         equity_curve_points.append({
                             "time": point.time,
@@ -350,7 +628,6 @@ class BacktestService:
                             "drawdown": point.drawdown,
                         })
                 elif isinstance(first_point, dict):
-                    # Dict format from LEAN (raw JSON) - use actual data
                     for point in response.equity_curve:
                         equity_curve_points.append({
                             "time": point.get("time", ""),
@@ -360,7 +637,6 @@ class BacktestService:
                             "drawdown": point.get("drawdown", 0),
                         })
                 else:
-                    # Legacy format: flat list of equity floats - reconstruct
                     num_points = len(response.equity_curve)
                     start_ts = request.start_date.timestamp()
                     end_ts = request.end_date.timestamp()
@@ -378,8 +654,8 @@ class BacktestService:
                         equity_curve_points.append({
                             "time": time_str,
                             "equity": equity,
-                            "cash": 0,  # Not available in legacy format
-                            "holdings_value": equity,  # Approximate
+                            "cash": 0,
+                            "holdings_value": equity,
                             "drawdown": drawdown,
                         })
 
