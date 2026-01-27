@@ -50,3 +50,39 @@ class DataFetchError(Exception):
     """Raised when data fetching fails."""
 
     pass
+
+
+class MockDataService:
+    """In-memory DataService for testing.
+
+    Seed with test data, then pass to BacktestService like production
+    uses BigQueryDataService.
+
+    Usage:
+        ds = MockDataService()
+        ds.seed("BTC-USD", "1h", bars)
+        service = BacktestService(data_service=ds, backtest_url=url)
+    """
+
+    def __init__(self) -> None:
+        self._data: dict[tuple[str, str], list[OHLCVBar]] = {}
+
+    def seed(self, symbol: str, resolution: str, bars: list[OHLCVBar]) -> None:
+        """Seed bars for a symbol/resolution pair."""
+        self._data[(symbol, resolution)] = bars
+
+    def get_ohlcv(
+        self,
+        symbol: str,
+        resolution: str,
+        start: datetime,
+        end: datetime,
+    ) -> list[OHLCVBar]:
+        """Return seeded bars. Raises DataFetchError if not seeded."""
+        key = (symbol, resolution)
+        if key not in self._data:
+            raise DataFetchError(
+                f"No test data seeded for {symbol}/{resolution}. "
+                f"Call ds.seed('{symbol}', '{resolution}', bars) first."
+            )
+        return self._data[key]
