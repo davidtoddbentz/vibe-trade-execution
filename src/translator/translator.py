@@ -42,7 +42,7 @@ from .ir import (
     StateOp,
     StrategyIR,
 )
-from .ir_translator import TranslationError
+from .errors import TranslationError
 from .ir_validator import validate_ir
 from .pipeline import ConditionPipeline
 
@@ -450,6 +450,24 @@ class IRTranslator:
                     obj["indicator_id"] = indicator.id
                     obj["field"] = field
         else:
+            # Handle indicator_band references - create the band indicator if not exists
+            # This handles references like {"type": "indicator_band", "indicator_id": "bollinger_20", "band": "lower"}
+            if obj.get("type") == "indicator_band":
+                ind_id = obj.get("indicator_id", "")
+                # Parse the indicator ID to determine band type and period
+                # Format: "{band_type}_{period}" e.g., "bollinger_20", "keltner_20"
+                if ind_id and "_" in ind_id and ind_id not in self.ctx.indicators:
+                    parts = ind_id.rsplit("_", 1)
+                    if len(parts) == 2:
+                        band_type, period_str = parts
+                        try:
+                            period = int(period_str)
+                            indicator = self._create_band_indicator(band_type, ind_id, period)
+                            if indicator:
+                                self.ctx.add_indicator(indicator)
+                        except ValueError:
+                            pass  # Invalid period, skip
+
             # Recurse into nested dicts and lists
             for value in list(obj.values()):
                 if isinstance(value, dict):
@@ -549,6 +567,33 @@ class IRTranslator:
                 val_str = str(val)
             parts.append(val_str)
         return "_".join(parts)
+
+    def _create_band_indicator(self, band_type: str, ind_id: str, period: int) -> Indicator | None:
+        """Create a band indicator from type, id, and period.
+
+        Args:
+            band_type: Band type string (e.g., "bollinger", "keltner", "donchian")
+            ind_id: The indicator ID to use
+            period: The period for the indicator
+
+        Returns:
+            Typed Indicator instance, or None if type unknown
+        """
+        from .ir import (
+            BollingerBands,
+            DonchianChannel,
+            KeltnerChannel,
+        )
+
+        if band_type == "bollinger":
+            return BollingerBands(id=ind_id, period=period, num_std_dev=2.0)
+        elif band_type == "keltner":
+            return KeltnerChannel(id=ind_id, period=period, multiplier=2.0)
+        elif band_type == "donchian":
+            return DonchianChannel(id=ind_id, period=period)
+
+        logger.warning(f"Unknown band type: {band_type}")
+        return None
 
     # =========================================================================
     # Helpers

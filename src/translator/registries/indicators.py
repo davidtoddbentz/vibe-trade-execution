@@ -30,7 +30,7 @@ from src.translator.ir import (
     RollingWindow,
     VolumeSMA,
 )
-from src.translator.ir_translator import TranslationError
+from src.translator.errors import TranslationError
 
 # Type alias for indicator factory functions
 IndicatorFactory = Callable[[str, dict[str, Any]], Indicator]
