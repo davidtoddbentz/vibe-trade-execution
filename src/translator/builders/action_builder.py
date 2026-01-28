@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.translator.ir import PositionPolicy, SetHoldingsAction
 from src.translator.errors import TranslationError
+from src.translator.ir import PositionPolicy, SetHoldingsAction
 
 
 class ActionBuilder:

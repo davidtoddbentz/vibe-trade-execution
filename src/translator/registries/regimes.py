@@ -10,6 +10,7 @@ from collections.abc import Callable
 
 from vibe_trade_shared.models.ir import RegimeCondition
 
+from src.translator.errors import TranslationError
 from src.translator.ir import (
     ADX,
     ATR,
@@ -24,7 +25,6 @@ from src.translator.ir import (
     RollingWindow,
     VolumeSMA,
 )
-from src.translator.errors import TranslationError
 
 # Type alias for regime indicator handler functions
 RegimeIndicatorHandler = Callable[[RegimeCondition], list[Indicator]]

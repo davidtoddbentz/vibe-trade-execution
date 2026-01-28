@@ -10,6 +10,7 @@ from typing import Any
 
 from vibe_trade_shared.models.ir import IndicatorRef
 
+from src.translator.errors import TranslationError
 from src.translator.ir import (
     ADX,
     ATR,
@@ -30,7 +31,6 @@ from src.translator.ir import (
     RollingWindow,
     VolumeSMA,
 )
-from src.translator.errors import TranslationError
 
 # Type alias for indicator factory functions
 IndicatorFactory = Callable[[str, dict[str, Any]], Indicator]

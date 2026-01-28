@@ -31,6 +31,7 @@ from vibe_trade_shared.models.ir import Condition
 
 from .builders import ActionBuilder
 from .context import TranslationContext
+from .errors import TranslationError
 from .ir import (
     EntryRule,
     ExitRule,
@@ -42,7 +43,6 @@ from .ir import (
     StateOp,
     StrategyIR,
 )
-from .errors import TranslationError
 from .ir_validator import validate_ir
 from .pipeline import ConditionPipeline
 
@@ -198,9 +198,7 @@ class IRTranslator:
         direction = action_spec.get("direction", "long")
         sizing = action_spec.get("sizing")
 
-        holdings_action = ActionBuilder.build_holdings_action(
-            action_spec, direction, sizing
-        )
+        holdings_action = ActionBuilder.build_holdings_action(action_spec, direction, sizing)
 
         return EntryRule(
             condition=condition,
