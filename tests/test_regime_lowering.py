@@ -7,7 +7,12 @@ from vibe_trade_shared.models.ir import (
     RegimeCondition,
 )
 
-from src.translator.regime_lowering import lower_regime_condition
+from src.translator.visitors import RegimeLowerer
+
+
+def lower_regime_condition(regime):
+    """Wrapper to use RegimeLowerer visitor for lowering."""
+    return RegimeLowerer().visit(regime)
 
 
 class TestRegimeLowering:
