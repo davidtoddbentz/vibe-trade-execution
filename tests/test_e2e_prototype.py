@@ -6332,3 +6332,318 @@ class TestStateMax:
         assert trade.exit_price is not None
         assert trade.exit_price > trade.entry_price
         assert trade.exit_price < peak_price
+
+
+# =============================================================================
+# Section 24: cooldown_bars Archetype Slot
+# =============================================================================
+
+
+class TestCooldownBarsSlot:
+    """E2E: cooldown_bars archetype slot maps to min_bars_between in the engine."""
+
+    def test_cooldown_bars_spaces_entries(self, lean_url: str):
+        """cooldown_bars=3 on EntryActionSpec enforces 3-bar gap between entries."""
+        # 6 bars: all above 100 → entry condition true on every bar
+        # With cooldown_bars=3: entry at bar 1, skip bars 2-3, entry at bar 4
+        bars = make_bars([95, 101, 102, 103, 104, 105], interval_ms=60_000)
+        data_service = MockDataService()
+        data_service.seed("TESTUSD", "1m", bars)
+        service = BacktestService(data_service=data_service, backtest_url=lean_url)
+
+        entry = EntryRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=EventSlot(condition=price_above(100.0)),
+            action=EntryActionSpec(
+                direction="long",
+                sizing=SizingSpec(type="fixed_usd", usd=1000),
+                cooldown_bars=3,
+                position_policy=PositionPolicy(mode="accumulate"),
+            ),
+        )
+        entry_card = card_from_archetype("entry_1", entry)
+        strategy, cards = make_strategy([entry_card], symbol="TESTUSD")
+
+        result = service.run_backtest(
+            strategy=strategy,
+            cards=cards,
+            config=BacktestConfig(
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 1, 1),
+                symbol="TESTUSD",
+                resolution="1m",
+                initial_cash=100_000.0,
+                fee_pct=0.0,
+                slippage_pct=0.0,
+            ),
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        resp = result.response
+        assert resp is not None
+        summary = resp.summary
+        # Only 2 entries possible: bar 1, then bar 4 (bars 2,3 blocked by cooldown)
+        assert summary.total_trades == 2
+        assert len(resp.trades) == 2
+
+        assert resp.trades[0].entry_bar == 1
+        assert resp.trades[1].entry_bar == 4
+        assert resp.trades[1].entry_bar - resp.trades[0].entry_bar == 3
+        for trade in resp.trades:
+            assert trade.exit_reason == "end_of_backtest"
+
+
+# =============================================================================
+# Section 25: min_usd / max_usd Sizing Constraints
+# =============================================================================
+
+
+class TestNotionalUsdConstraints:
+    """E2E: min_usd/max_usd on SizingSpec clamp or skip orders in the engine."""
+
+    def test_max_usd_clamps_order_size(self, lean_url: str):
+        """max_usd caps the notional order value even when pct_equity is large."""
+        # Entry at $100, 95% of $100k = $95,000 notional.
+        # max_usd=$5000 should clamp to $5000 / $100 = 50 units.
+        bars = make_bars([95, 100, 110], interval_ms=60_000)
+        data_service = MockDataService()
+        data_service.seed("TESTUSD", "1m", bars)
+        service = BacktestService(data_service=data_service, backtest_url=lean_url)
+
+        entry = EntryRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=EventSlot(condition=price_above(99.0)),
+            action=EntryActionSpec(
+                direction="long",
+                sizing=SizingSpec(type="pct_equity", pct=95, max_usd=5000.0),
+                position_policy=PositionPolicy(mode="single"),
+            ),
+        )
+        exit_ = ExitRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=ExitEventSlot(condition=price_above(109.0)),
+            action=ExitActionSpec(mode="close"),
+        )
+        strategy, cards = make_strategy(
+            [card_from_archetype("entry_1", entry), card_from_archetype("exit_1", exit_)],
+            symbol="TESTUSD",
+        )
+
+        result = service.run_backtest(
+            strategy=strategy,
+            cards=cards,
+            config=BacktestConfig(
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 1, 1),
+                symbol="TESTUSD",
+                resolution="1m",
+                initial_cash=100_000.0,
+                fee_pct=0.0,
+                slippage_pct=0.0,
+            ),
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        resp = result.response
+        assert resp is not None
+        assert resp.summary.total_trades == 1
+
+        trade = resp.trades[0]
+        assert trade.direction == "long"
+        # Clamped: $5000 / entry_price ≈ 50 units (not 950 units from 95%)
+        max_expected_qty = 5000.0 / trade.entry_price
+        assert trade.quantity == pytest.approx(max_expected_qty, rel=0.05)
+        # PnL should be ~$500 (50 units * $10 gain), not ~$9500
+        assert trade.pnl < 1000
+
+    def test_max_usd_with_fixed_usd_sizing(self, lean_url: str):
+        """max_usd caps fixed_usd order when fixed_usd exceeds max_usd."""
+        # fixed_usd=$10000, max_usd=$2000 → should clamp to $2000
+        bars = make_bars([95, 100, 110], interval_ms=60_000)
+        data_service = MockDataService()
+        data_service.seed("TESTUSD", "1m", bars)
+        service = BacktestService(data_service=data_service, backtest_url=lean_url)
+
+        entry = EntryRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=EventSlot(condition=price_above(99.0)),
+            action=EntryActionSpec(
+                direction="long",
+                sizing=SizingSpec(type="fixed_usd", usd=10000, max_usd=2000.0),
+                position_policy=PositionPolicy(mode="single"),
+            ),
+        )
+        exit_ = ExitRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=ExitEventSlot(condition=price_above(109.0)),
+            action=ExitActionSpec(mode="close"),
+        )
+        strategy, cards = make_strategy(
+            [card_from_archetype("entry_1", entry), card_from_archetype("exit_1", exit_)],
+            symbol="TESTUSD",
+        )
+
+        result = service.run_backtest(
+            strategy=strategy,
+            cards=cards,
+            config=BacktestConfig(
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 1, 1),
+                symbol="TESTUSD",
+                resolution="1m",
+                initial_cash=100_000.0,
+                fee_pct=0.0,
+                slippage_pct=0.0,
+            ),
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        resp = result.response
+        assert resp is not None
+        assert resp.summary.total_trades == 1
+
+        trade = resp.trades[0]
+        # Clamped to max_usd=$2000: quantity ≈ 2000/100 = 20 units (not 100)
+        max_expected_qty = 2000.0 / trade.entry_price
+        assert trade.quantity == pytest.approx(max_expected_qty, rel=0.05)
+        # PnL ≈ 20 * $10 = $200 (not $1000)
+        assert trade.pnl < 400
+
+    def test_min_usd_skips_small_order(self, lean_url: str):
+        """min_usd skips orders whose notional is below the floor."""
+        # fixed_usd=$50, min_usd=$100 → order notional $50 < $100 → skip
+        bars = make_bars([95, 100, 110], interval_ms=60_000)
+        data_service = MockDataService()
+        data_service.seed("TESTUSD", "1m", bars)
+        service = BacktestService(data_service=data_service, backtest_url=lean_url)
+
+        entry = EntryRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=EventSlot(condition=price_above(99.0)),
+            action=EntryActionSpec(
+                direction="long",
+                sizing=SizingSpec(type="fixed_usd", usd=50, min_usd=100.0),
+                position_policy=PositionPolicy(mode="single"),
+            ),
+        )
+        entry_card = card_from_archetype("entry_1", entry)
+        strategy, cards = make_strategy([entry_card], symbol="TESTUSD")
+
+        result = service.run_backtest(
+            strategy=strategy,
+            cards=cards,
+            config=BacktestConfig(
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 1, 1),
+                symbol="TESTUSD",
+                resolution="1m",
+                initial_cash=100_000.0,
+                fee_pct=0.0,
+                slippage_pct=0.0,
+            ),
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        resp = result.response
+        assert resp is not None
+        # Order skipped: notional $50 < min_usd $100 → no trades
+        assert resp.summary.total_trades == 0
+        assert len(resp.trades) == 0
+
+
+# =============================================================================
+# Section 26: max_entries_per_day
+# =============================================================================
+
+
+class TestMaxEntriesPerDay:
+    """E2E: max_entries_per_day caps daily entry count in accumulate mode."""
+
+    def test_max_entries_per_day_caps_entries(self, lean_url: str):
+        """max_entries_per_day=2 limits to 2 entries even with 5 signals."""
+        # 6 bars all above 100 → 5 potential entries (bar 0 is below)
+        bars = make_bars([95, 101, 102, 103, 104, 105], interval_ms=60_000)
+        data_service = MockDataService()
+        data_service.seed("TESTUSD", "1m", bars)
+        service = BacktestService(data_service=data_service, backtest_url=lean_url)
+
+        entry = EntryRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=EventSlot(condition=price_above(100.0)),
+            action=EntryActionSpec(
+                direction="long",
+                sizing=SizingSpec(type="fixed_usd", usd=1000),
+                max_entries_per_day=2,
+                position_policy=PositionPolicy(mode="accumulate"),
+            ),
+        )
+        entry_card = card_from_archetype("entry_1", entry)
+        strategy, cards = make_strategy([entry_card], symbol="TESTUSD")
+
+        result = service.run_backtest(
+            strategy=strategy,
+            cards=cards,
+            config=BacktestConfig(
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 1, 1),
+                symbol="TESTUSD",
+                resolution="1m",
+                initial_cash=100_000.0,
+                fee_pct=0.0,
+                slippage_pct=0.0,
+            ),
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        resp = result.response
+        assert resp is not None
+        summary = resp.summary
+        # max_entries_per_day=2 → only 2 trades, not 5
+        assert summary.total_trades == 2
+        assert len(resp.trades) == 2
+
+        assert resp.trades[0].entry_bar == 1
+        assert resp.trades[1].entry_bar == 2
+        for trade in resp.trades:
+            assert trade.exit_reason == "end_of_backtest"
+
+    def test_max_entries_per_day_single_mode_still_blocks(self, lean_url: str):
+        """max_entries_per_day doesn't override single mode — still only 1 entry."""
+        bars = make_bars([95, 101, 102, 103, 104, 105], interval_ms=60_000)
+        data_service = MockDataService()
+        data_service.seed("TESTUSD", "1m", bars)
+        service = BacktestService(data_service=data_service, backtest_url=lean_url)
+
+        entry = EntryRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=EventSlot(condition=price_above(100.0)),
+            action=EntryActionSpec(
+                direction="long",
+                max_entries_per_day=10,
+                position_policy=PositionPolicy(mode="single"),
+            ),
+        )
+        entry_card = card_from_archetype("entry_1", entry)
+        strategy, cards = make_strategy([entry_card], symbol="TESTUSD")
+
+        result = service.run_backtest(
+            strategy=strategy,
+            cards=cards,
+            config=BacktestConfig(
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 1, 1),
+                symbol="TESTUSD",
+                resolution="1m",
+                initial_cash=100_000.0,
+                fee_pct=0.0,
+                slippage_pct=0.0,
+            ),
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        resp = result.response
+        assert resp is not None
+        # Single mode overrides max_entries_per_day — only 1 trade
+        assert resp.summary.total_trades == 1
+        assert len(resp.trades) == 1
+        assert resp.trades[0].entry_bar == 1
