@@ -6070,7 +6070,6 @@ class TestOverlayScaling:
                 context=ContextSpec(symbol="TESTUSD"),
                 event=RegimeScalerEvent(regime=overlay_condition),
                 action=OverlayActionSpec(
-                    scale_risk_frac=1.0,
                     scale_size_frac=0.5,
                     target_roles=["entry"],
                 ),

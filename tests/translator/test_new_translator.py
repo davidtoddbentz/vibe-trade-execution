@@ -566,22 +566,13 @@ class TestGateFieldRejection:
             ),
         }
 
-    def test_gate_target_tags_raises(self):
-        """Gate target_tags raises until implemented."""
+    def test_gate_unknown_field_rejected_by_schema(self):
+        """Unknown fields on gate action are rejected by Pydantic validation."""
         strategy, cards = self._make_gate_strategy({
             "mode": "allow", "target_roles": ["entry"], "target_tags": ["trend"]
         })
         translator = IRTranslator(strategy, cards)
-        with pytest.raises(TranslationError, match="target_tags"):
-            translator.translate()
-
-    def test_gate_target_ids_raises(self):
-        """Gate target_ids raises until implemented."""
-        strategy, cards = self._make_gate_strategy({
-            "mode": "allow", "target_roles": ["entry"], "target_ids": ["entry_1"]
-        })
-        translator = IRTranslator(strategy, cards)
-        with pytest.raises(TranslationError, match="target_ids"):
+        with pytest.raises(TranslationError, match="Invalid slots"):
             translator.translate()
 
 
@@ -648,29 +639,11 @@ class TestOverlayFieldRejection:
             ),
         }
 
-    def test_overlay_scale_risk_frac_raises(self):
-        """scale_risk_frac raises until implemented."""
+    def test_overlay_unknown_field_rejected_by_schema(self):
+        """Unknown fields on overlay action are rejected by Pydantic validation."""
         strategy, cards = self._make_overlay_strategy({
-            "scale_size_frac": 1.0, "scale_risk_frac": 0.5, "target_roles": ["entry"]
+            "scale_size_frac": 0.5, "scale_risk_frac": 0.5, "target_roles": ["entry"]
         })
         translator = IRTranslator(strategy, cards)
-        with pytest.raises(TranslationError, match="scale_risk_frac"):
-            translator.translate()
-
-    def test_overlay_target_tags_raises(self):
-        """Overlay target_tags raises until implemented."""
-        strategy, cards = self._make_overlay_strategy({
-            "scale_size_frac": 0.5, "target_tags": ["trend"], "target_roles": ["entry"]
-        })
-        translator = IRTranslator(strategy, cards)
-        with pytest.raises(TranslationError, match="target_tags"):
-            translator.translate()
-
-    def test_overlay_target_ids_raises(self):
-        """Overlay target_ids raises until implemented."""
-        strategy, cards = self._make_overlay_strategy({
-            "scale_size_frac": 0.5, "target_ids": ["entry_1"], "target_roles": ["entry"]
-        })
-        translator = IRTranslator(strategy, cards)
-        with pytest.raises(TranslationError, match="target_ids"):
+        with pytest.raises(TranslationError, match="Invalid slots"):
             translator.translate()

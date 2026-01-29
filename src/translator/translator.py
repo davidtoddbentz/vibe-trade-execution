@@ -299,11 +299,6 @@ class IRTranslator:
 
         action_spec = slots.get("action", {})
 
-        if action_spec.get("target_tags") is not None:
-            raise TranslationError("Gate target_tags filtering is not yet supported.")
-        if action_spec.get("target_ids") is not None:
-            raise TranslationError("Gate target_ids filtering is not yet supported.")
-
         mode = action_spec.get("mode", "allow")
         target_roles = action_spec.get("target_roles", ["entry"])
 
@@ -330,29 +325,14 @@ class IRTranslator:
 
         action_spec = slots.get("action", {})
 
-        if action_spec.get("scale_risk_frac", 1.0) != 1.0:
-            raise TranslationError(
-                "scale_risk_frac is not yet supported. Use scale_size_frac for position sizing."
-            )
-        if action_spec.get("target_tags") is not None:
-            raise TranslationError("Overlay target_tags filtering is not yet supported.")
-        if action_spec.get("target_ids") is not None:
-            raise TranslationError("Overlay target_ids filtering is not yet supported.")
-
-        scale_risk_frac = action_spec.get("scale_risk_frac", 1.0)
         scale_size_frac = action_spec.get("scale_size_frac", 1.0)
         target_roles = action_spec.get("target_roles", ["entry", "exit"])
-        target_tags = action_spec.get("target_tags", [])
-        target_ids = action_spec.get("target_ids", [])
 
         return OverlayRule(
             id=f"overlay_{len(self.ctx.indicators)}",
             condition=condition,
-            scale_risk_frac=scale_risk_frac,
             scale_size_frac=scale_size_frac,
             target_roles=target_roles,
-            target_tags=target_tags,
-            target_ids=target_ids,
         )
 
     # =========================================================================
