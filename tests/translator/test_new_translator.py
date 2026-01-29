@@ -311,3 +311,350 @@ class TestGateTranslation:
         # ADX indicator should be registered
         indicator_ids = [ind.id for ind in ir.indicators]
         assert "adx_14" in indicator_ids
+
+
+class TestEntryFieldRejection:
+    """Tests for rejection of unsupported entry action fields."""
+
+    def _make_entry_strategy(self, action_overrides: dict):
+        """Helper to create a minimal entry strategy with custom action fields."""
+        action = {"direction": "long", "position_policy": {"mode": "single"}}
+        action.update(action_overrides)
+        return Strategy(
+            id="test",
+            name="Test",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                Attachment(card_id="entry", role="entry", enabled=True, overrides={})
+            ],
+        ), {
+            "entry": Card(
+                id="entry",
+                type="entry.rule_trigger",
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
+                        },
+                    },
+                    "action": action,
+                },
+            )
+        }
+
+    def test_non_market_execution_raises(self):
+        """Non-market order types raise until implemented."""
+        strategy, cards = self._make_entry_strategy({
+            "execution": {"order_type": "limit", "limit_price": 100.0}
+        })
+        translator = IRTranslator(strategy, cards)
+        with pytest.raises(TranslationError, match="not yet supported"):
+            translator.translate()
+
+    def test_market_execution_allowed(self):
+        """Market execution should not raise."""
+        strategy, cards = self._make_entry_strategy({
+            "execution": {"order_type": "market"}
+        })
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+        assert ir is not None
+
+    def test_confirm_raises(self):
+        """confirm=close_confirm raises until implemented."""
+        strategy, cards = self._make_entry_strategy({
+            "confirm": "close_confirm"
+        })
+        translator = IRTranslator(strategy, cards)
+        with pytest.raises(TranslationError, match="confirm mode"):
+            translator.translate()
+
+    def test_cooldown_bars_maps_to_min_bars_between(self):
+        """cooldown_bars maps to position_policy.min_bars_between."""
+        strategy, cards = self._make_entry_strategy({
+            "cooldown_bars": 5
+        })
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+        assert ir.entry.action.position_policy.min_bars_between == 5
+
+    def test_cooldown_bars_does_not_override_explicit(self):
+        """cooldown_bars does not override explicit min_bars_between."""
+        strategy, cards = self._make_entry_strategy({
+            "cooldown_bars": 5,
+            "position_policy": {"mode": "accumulate", "min_bars_between": 10},
+        })
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+        assert ir.entry.action.position_policy.min_bars_between == 10
+
+    def test_max_entries_per_day_maps_to_policy(self):
+        """max_entries_per_day maps to position_policy.max_entries_per_day."""
+        strategy, cards = self._make_entry_strategy({
+            "max_entries_per_day": 3
+        })
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+        assert ir.entry.action.position_policy.max_entries_per_day == 3
+
+    def test_sizing_min_usd_passes_through(self):
+        """min_usd passes through to SetHoldingsAction."""
+        strategy, cards = self._make_entry_strategy({
+            "sizing": {"type": "pct_equity", "pct": 50, "min_usd": 100.0}
+        })
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+        assert ir.entry.action.min_usd == 100.0
+
+    def test_sizing_max_usd_passes_through(self):
+        """max_usd passes through to SetHoldingsAction."""
+        strategy, cards = self._make_entry_strategy({
+            "sizing": {"type": "pct_equity", "pct": 50, "max_usd": 50000.0}
+        })
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+        assert ir.entry.action.max_usd == 50000.0
+
+
+class TestExitFieldRejection:
+    """Tests for rejection of unsupported exit action fields."""
+
+    def _make_exit_strategy(self, exit_action: dict):
+        """Helper to create a strategy with entry + exit where exit action has custom fields."""
+        return Strategy(
+            id="test",
+            name="Test",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                Attachment(card_id="entry", role="entry", enabled=True, overrides={}),
+                Attachment(card_id="exit", role="exit", enabled=True, overrides={}),
+            ],
+        ), {
+            "entry": Card(
+                id="entry",
+                type="entry.rule_trigger",
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
+                        },
+                    },
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
+                },
+            ),
+            "exit": Card(
+                id="exit",
+                type="exit.trailing_stop",
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {"trail_band": {"band": "keltner", "length": 20, "mult": 2.0}},
+                    "action": exit_action,
+                },
+            ),
+        }
+
+    def test_exit_confirm_raises(self):
+        """Exit confirm mode raises until implemented."""
+        strategy, cards = self._make_exit_strategy({"mode": "close", "confirm": "close_confirm"})
+        translator = IRTranslator(strategy, cards)
+        with pytest.raises(TranslationError, match="confirm mode"):
+            translator.translate()
+
+
+class TestGateFieldRejection:
+    """Tests for rejection of unsupported gate action fields."""
+
+    def _make_gate_strategy(self, gate_action: dict):
+        """Helper to create a strategy with gate + entry where gate action has custom fields."""
+        return Strategy(
+            id="test",
+            name="Test",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                Attachment(card_id="gate", role="gate", enabled=True, overrides={}),
+                Attachment(card_id="entry", role="entry", enabled=True, overrides={}),
+            ],
+        ), {
+            "gate": Card(
+                id="gate",
+                type="gate.regime",
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                slots={
+                    "context": {"tf": "1d", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "metric": "trend_adx",
+                            "op": ">",
+                            "value": 25,
+                            "lookback_bars": 14,
+                        },
+                    },
+                    "action": gate_action,
+                },
+            ),
+            "entry": Card(
+                id="entry",
+                type="entry.rule_trigger",
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                slots={
+                    "context": {"tf": "1d", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
+                        },
+                    },
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
+                },
+            ),
+        }
+
+    def test_gate_target_tags_raises(self):
+        """Gate target_tags raises until implemented."""
+        strategy, cards = self._make_gate_strategy({
+            "mode": "allow", "target_roles": ["entry"], "target_tags": ["trend"]
+        })
+        translator = IRTranslator(strategy, cards)
+        with pytest.raises(TranslationError, match="target_tags"):
+            translator.translate()
+
+    def test_gate_target_ids_raises(self):
+        """Gate target_ids raises until implemented."""
+        strategy, cards = self._make_gate_strategy({
+            "mode": "allow", "target_roles": ["entry"], "target_ids": ["entry_1"]
+        })
+        translator = IRTranslator(strategy, cards)
+        with pytest.raises(TranslationError, match="target_ids"):
+            translator.translate()
+
+
+class TestOverlayFieldRejection:
+    """Tests for rejection of unsupported overlay action fields."""
+
+    def _make_overlay_strategy(self, overlay_action: dict):
+        """Helper to create a strategy with entry + overlay where overlay has custom fields."""
+        return Strategy(
+            id="test",
+            name="Test",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                Attachment(card_id="entry", role="entry", enabled=True, overrides={}),
+                Attachment(card_id="overlay", role="overlay", enabled=True, overrides={}),
+            ],
+        ), {
+            "entry": Card(
+                id="entry",
+                type="entry.rule_trigger",
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
+                        },
+                    },
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
+                },
+            ),
+            "overlay": Card(
+                id="overlay",
+                type="overlay.regime_scaler",
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "regime": {
+                            "type": "regime",
+                            "regime": {
+                                "metric": "vol_atr_pct",
+                            "op": ">",
+                            "value": 2.0,
+                                "lookback_bars": 14,
+                            },
+                        },
+                    },
+                    "action": overlay_action,
+                },
+            ),
+        }
+
+    def test_overlay_scale_risk_frac_raises(self):
+        """scale_risk_frac raises until implemented."""
+        strategy, cards = self._make_overlay_strategy({
+            "scale_size_frac": 1.0, "scale_risk_frac": 0.5, "target_roles": ["entry"]
+        })
+        translator = IRTranslator(strategy, cards)
+        with pytest.raises(TranslationError, match="scale_risk_frac"):
+            translator.translate()
+
+    def test_overlay_target_tags_raises(self):
+        """Overlay target_tags raises until implemented."""
+        strategy, cards = self._make_overlay_strategy({
+            "scale_size_frac": 0.5, "target_tags": ["trend"], "target_roles": ["entry"]
+        })
+        translator = IRTranslator(strategy, cards)
+        with pytest.raises(TranslationError, match="target_tags"):
+            translator.translate()
+
+    def test_overlay_target_ids_raises(self):
+        """Overlay target_ids raises until implemented."""
+        strategy, cards = self._make_overlay_strategy({
+            "scale_size_frac": 0.5, "target_ids": ["entry_1"], "target_roles": ["entry"]
+        })
+        translator = IRTranslator(strategy, cards)
+        with pytest.raises(TranslationError, match="target_ids"):
+            translator.translate()

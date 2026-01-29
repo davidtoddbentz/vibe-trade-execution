@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from src.translator.errors import TranslationError
-from src.translator.ir import LiquidateAction, PositionPolicy, ReducePositionAction, SetHoldingsAction
+from src.translator.ir import (
+    LiquidateAction,
+    PositionPolicy,
+    ReducePositionAction,
+    SetHoldingsAction,
+)
 
 
 class ActionBuilder:
@@ -39,12 +44,17 @@ class ActionBuilder:
         if policy_dict := action.get("position_policy"):
             position_policy = PositionPolicy(**policy_dict)
 
+        # Extract sizing constraints
+        min_usd = sizing.get("min_usd") if sizing else None
+        max_usd = sizing.get("max_usd") if sizing else None
+        common = dict(position_policy=position_policy, min_usd=min_usd, max_usd=max_usd)
+
         # Handle no sizing - default to percentage
         if sizing is None:
             return SetHoldingsAction(
                 sizing_mode="pct_equity",
                 allocation=sign * ActionBuilder.DEFAULT_ALLOCATION,
-                position_policy=position_policy,
+                **common,
             )
 
         sizing_type = sizing.get("type")
@@ -54,7 +64,7 @@ class ActionBuilder:
             return SetHoldingsAction(
                 sizing_mode="pct_equity",
                 allocation=sign * (pct / 100.0),
-                position_policy=position_policy,
+                **common,
             )
 
         if sizing_type == "fixed_usd":
@@ -63,7 +73,7 @@ class ActionBuilder:
                 sizing_mode="fixed_usd",
                 allocation=0.0,  # Not used
                 fixed_usd=sign * usd,
-                position_policy=position_policy,
+                **common,
             )
 
         if sizing_type == "fixed_units":
@@ -72,7 +82,7 @@ class ActionBuilder:
                 sizing_mode="fixed_units",
                 allocation=0.0,  # Not used
                 fixed_units=sign * units,
-                position_policy=position_policy,
+                **common,
             )
 
         raise TranslationError(f"Unknown sizing type: {sizing_type}")
@@ -98,8 +108,4 @@ class ActionBuilder:
         if mode in ("close", "reduce"):
             return ReducePositionAction(size_frac=size_frac)
 
-        # Reverse mode: for now, treat as full liquidate (future: ReversePositionAction)
-        if mode == "reverse":
-            return LiquidateAction()
-
-        return LiquidateAction()
+        raise TranslationError(f"Unknown exit mode: {mode}")

@@ -31,7 +31,13 @@ from vibe_trade_shared.models.archetypes import parse_archetype
 from vibe_trade_shared.models.ir import Condition
 
 from .builders import ActionBuilder
-from .compiler import CompilationContext, build_condition, collect_state, resolve_condition, resolve_state_ops
+from .compiler import (
+    CompilationContext,
+    build_condition,
+    collect_state,
+    resolve_condition,
+    resolve_state_ops,
+)
 from .errors import TranslationError
 from .ir import (
     EntryRule,
@@ -191,6 +197,44 @@ class IRTranslator:
 
         # Get action config and build holdings action
         action_spec = slots.get("action", {})
+        # Reject unsupported fields with clear errors
+        execution = action_spec.get("execution")
+        if execution and execution.get("order_type", "market") != "market":
+            order_type = execution["order_type"]
+            raise TranslationError(
+                f"Order type '{order_type}' is not yet supported. Only market orders are currently implemented."
+            )
+
+        confirm = action_spec.get("confirm", "none")
+        if confirm != "none":
+            raise TranslationError(
+                f"Entry confirm mode '{confirm}' is not yet supported."
+            )
+
+        # Map cooldown_bars → position_policy.min_bars_between
+        cooldown_bars = action_spec.get("cooldown_bars")
+        if cooldown_bars is not None:
+            policy = action_spec.get("position_policy") or {}
+            if isinstance(policy, dict):
+                policy = {**policy}
+            else:
+                policy = {}
+            if policy.get("min_bars_between") is None:
+                policy["min_bars_between"] = cooldown_bars
+            action_spec = {**action_spec, "position_policy": policy}
+
+        # Map max_entries_per_day → position_policy.max_entries_per_day
+        max_entries = action_spec.get("max_entries_per_day")
+        if max_entries is not None:
+            policy = action_spec.get("position_policy") or {}
+            if isinstance(policy, dict):
+                policy = {**policy}
+            else:
+                policy = {}
+            if policy.get("max_entries_per_day") is None:
+                policy["max_entries_per_day"] = max_entries
+            action_spec = {**action_spec, "position_policy": policy}
+
         direction = action_spec.get("direction", "long")
         sizing = action_spec.get("sizing")
 
@@ -220,6 +264,12 @@ class IRTranslator:
 
         # Build exit action from slots (supports partial exits via size_frac)
         action_spec = slots.get("action", {})
+
+        if action_spec.get("confirm", "none") != "none":
+            raise TranslationError(
+                f"Exit confirm mode '{action_spec['confirm']}' is not yet supported."
+            )
+
         action = ActionBuilder.build_exit_action(action_spec)
 
         return ExitRule(
@@ -244,6 +294,12 @@ class IRTranslator:
             raise TranslationError(f"Unsupported gate archetype: {archetype}")
 
         action_spec = slots.get("action", {})
+
+        if action_spec.get("target_tags") is not None:
+            raise TranslationError("Gate target_tags filtering is not yet supported.")
+        if action_spec.get("target_ids") is not None:
+            raise TranslationError("Gate target_ids filtering is not yet supported.")
+
         mode = action_spec.get("mode", "allow")
         target_roles = action_spec.get("target_roles", ["entry"])
 
@@ -269,6 +325,16 @@ class IRTranslator:
             raise TranslationError(f"Unsupported overlay archetype: {archetype}")
 
         action_spec = slots.get("action", {})
+
+        if action_spec.get("scale_risk_frac", 1.0) != 1.0:
+            raise TranslationError(
+                "scale_risk_frac is not yet supported. Use scale_size_frac for position sizing."
+            )
+        if action_spec.get("target_tags") is not None:
+            raise TranslationError("Overlay target_tags filtering is not yet supported.")
+        if action_spec.get("target_ids") is not None:
+            raise TranslationError("Overlay target_ids filtering is not yet supported.")
+
         scale_risk_frac = action_spec.get("scale_risk_frac", 1.0)
         scale_size_frac = action_spec.get("scale_size_frac", 1.0)
         target_roles = action_spec.get("target_roles", ["entry", "exit"])
