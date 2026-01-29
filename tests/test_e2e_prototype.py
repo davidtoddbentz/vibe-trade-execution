@@ -6647,3 +6647,62 @@ class TestMaxEntriesPerDay:
         assert resp.summary.total_trades == 1
         assert len(resp.trades) == 1
         assert resp.trades[0].entry_bar == 1
+
+
+# =============================================================================
+# Section 27: close_confirm Mode
+# =============================================================================
+
+
+class TestCloseConfirmMode:
+    """E2E: close_confirm is accepted as a no-op (engine evaluates on bar close)."""
+
+    def test_entry_close_confirm_succeeds(self, lean_url: str):
+        """Entry with confirm=close_confirm translates and executes normally."""
+        bars = make_bars([95, 100, 110], interval_ms=60_000)
+        data_service = MockDataService()
+        data_service.seed("TESTUSD", "1m", bars)
+        service = BacktestService(data_service=data_service, backtest_url=lean_url)
+
+        entry = EntryRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=EventSlot(condition=price_above(99.0)),
+            action=EntryActionSpec(
+                direction="long",
+                confirm="close_confirm",
+                position_policy=PositionPolicy(mode="single"),
+            ),
+        )
+        exit_ = ExitRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=ExitEventSlot(condition=price_above(109.0)),
+            action=ExitActionSpec(mode="close", confirm="close_confirm"),
+        )
+        strategy, cards = make_strategy(
+            [card_from_archetype("entry_1", entry), card_from_archetype("exit_1", exit_)],
+            symbol="TESTUSD",
+        )
+
+        result = service.run_backtest(
+            strategy=strategy,
+            cards=cards,
+            config=BacktestConfig(
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 1, 1),
+                symbol="TESTUSD",
+                resolution="1m",
+                initial_cash=100_000.0,
+                fee_pct=0.0,
+                slippage_pct=0.0,
+            ),
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        resp = result.response
+        assert resp is not None
+        assert resp.summary.total_trades == 1
+        trade = resp.trades[0]
+        assert trade.direction == "long"
+        assert trade.entry_price == pytest.approx(100.0, rel=0.001)
+        assert trade.exit_price == pytest.approx(110.0, rel=0.001)
+        assert trade.pnl > 0

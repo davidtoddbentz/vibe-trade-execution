@@ -205,8 +205,10 @@ class IRTranslator:
                 f"Order type '{order_type}' is not yet supported. Only market orders are currently implemented."
             )
 
+        # close_confirm is a no-op: engine evaluates on bar close by default.
+        # Reject truly unsupported confirm modes (future: "immediate" etc.)
         confirm = action_spec.get("confirm", "none")
-        if confirm != "none":
+        if confirm not in ("none", "close_confirm"):
             raise TranslationError(
                 f"Entry confirm mode '{confirm}' is not yet supported."
             )
@@ -265,9 +267,11 @@ class IRTranslator:
         # Build exit action from slots (supports partial exits via size_frac)
         action_spec = slots.get("action", {})
 
-        if action_spec.get("confirm", "none") != "none":
+        # close_confirm is a no-op: engine evaluates on bar close by default.
+        exit_confirm = action_spec.get("confirm", "none")
+        if exit_confirm not in ("none", "close_confirm"):
             raise TranslationError(
-                f"Exit confirm mode '{action_spec['confirm']}' is not yet supported."
+                f"Exit confirm mode '{exit_confirm}' is not yet supported."
             )
 
         action = ActionBuilder.build_exit_action(action_spec)

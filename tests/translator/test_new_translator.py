@@ -373,13 +373,22 @@ class TestEntryFieldRejection:
         ir = translator.translate()
         assert ir is not None
 
-    def test_confirm_raises(self):
-        """confirm=close_confirm raises until implemented."""
+    def test_close_confirm_accepted(self):
+        """close_confirm is a no-op (engine evaluates on bar close by default)."""
         strategy, cards = self._make_entry_strategy({
             "confirm": "close_confirm"
         })
         translator = IRTranslator(strategy, cards)
-        with pytest.raises(TranslationError, match="confirm mode"):
+        ir = translator.translate()
+        assert ir.entry is not None
+
+    def test_unsupported_confirm_raises(self):
+        """Unknown confirm modes raise TranslationError (via Pydantic validation)."""
+        strategy, cards = self._make_entry_strategy({
+            "confirm": "immediate"
+        })
+        translator = IRTranslator(strategy, cards)
+        with pytest.raises(TranslationError, match="Invalid slots"):
             translator.translate()
 
     def test_cooldown_bars_maps_to_min_bars_between(self):
@@ -482,11 +491,18 @@ class TestExitFieldRejection:
             ),
         }
 
-    def test_exit_confirm_raises(self):
-        """Exit confirm mode raises until implemented."""
+    def test_exit_close_confirm_accepted(self):
+        """Exit close_confirm is a no-op (engine evaluates on bar close by default)."""
         strategy, cards = self._make_exit_strategy({"mode": "close", "confirm": "close_confirm"})
         translator = IRTranslator(strategy, cards)
-        with pytest.raises(TranslationError, match="confirm mode"):
+        ir = translator.translate()
+        assert len(ir.exits) >= 1
+
+    def test_exit_unsupported_confirm_raises(self):
+        """Exit with unknown confirm mode raises TranslationError (via Pydantic validation)."""
+        strategy, cards = self._make_exit_strategy({"mode": "close", "confirm": "immediate"})
+        translator = IRTranslator(strategy, cards)
+        with pytest.raises(TranslationError, match="Invalid slots"):
             translator.translate()
 
 
