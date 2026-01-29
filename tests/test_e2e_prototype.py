@@ -6127,6 +6127,150 @@ class TestOverlayScaling:
 
 
 # =============================================================================
+# Section 36b: Partial Exit Scenarios
+# =============================================================================
+
+
+class TestPartialExit:
+    """Test partial exit (reduce mode with size_frac).
+
+    Verifies that ReducePositionAction correctly closes a fraction of the
+    position while keeping the remainder open.
+    """
+
+    def test_partial_exit_closes_fraction(self, lean_url: str):
+        """Enter, partial exit 50% (one spike bar), then full exit of remaining.
+
+        Uses a single spike bar above 110 so the partial exit fires exactly once,
+        then price returns below 110 (but above 95) before dropping to trigger
+        the full exit.
+        """
+        bars = make_bars(
+            [100.0] * 60    # flat, no signal (warmup)
+            + [106.0] * 5   # above 105 → entry
+            + [111.0]       # single bar above 110 → partial exit (50%)
+            + [107.0] * 10  # back below 110, above 95 → no exit fires
+            + [94.0] * 5    # below 95 → full exit of remaining
+        )
+        data_service = MockDataService()
+        data_service.seed("BTC-USD", "1h", bars)
+
+        service = BacktestService(
+            data_service=data_service,
+            backtest_url=lean_url,
+        )
+
+        entry = EntryRuleTrigger(
+            context=ContextSpec(symbol="BTC-USD", tf="1h"),
+            event=EventSlot(condition=price_above(105.0)),
+            action=EntryActionSpec(
+                direction="long",
+                position_policy=PositionPolicy(mode="single"),
+            ),
+        )
+        partial_exit = ExitRuleTrigger(
+            context=ContextSpec(symbol="BTC-USD"),
+            event=ExitEventSlot(condition=price_above(110.0)),
+            action=ExitActionSpec(mode="reduce", size_frac=0.5),
+        )
+        full_exit = ExitRuleTrigger(
+            context=ContextSpec(symbol="BTC-USD"),
+            event=ExitEventSlot(condition=price_below(95.0)),
+            action=ExitActionSpec(mode="close", size_frac=1.0),
+        )
+
+        strategy, cards = make_strategy(
+            [
+                card_from_archetype("entry_1", entry),
+                card_from_archetype("exit_partial", partial_exit),
+                card_from_archetype("exit_full", full_exit),
+            ]
+        )
+
+        result = service.run_backtest(
+            strategy=strategy,
+            cards=cards,
+            config=BacktestConfig(
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 1, 5),
+                symbol="BTC-USD",
+                resolution="1h",
+                initial_cash=100_000.0,
+                fee_pct=0.1,
+                slippage_pct=0.05,
+            ),
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        assert result.response is not None, "No LEAN response"
+        resp = result.response
+
+        trades = resp.trades
+        assert len(trades) >= 2, f"Expected >=2 trades (partial + full), got {len(trades)}"
+        # First trade: partial exit (50% of position)
+        # Second trade: full exit (remaining 50%)
+        # Both should be approximately equal quantity
+        first_qty = abs(trades[0].quantity)
+        second_qty = abs(trades[1].quantity)
+        assert first_qty == pytest.approx(second_qty, rel=0.2)
+
+    def test_partial_exit_default_is_full_close(self, lean_url: str):
+        """Verify mode=close, size_frac=1.0 still fully exits (backward compat)."""
+        bars = make_bars(
+            [100.0] * 60   # flat, no signal
+            + [106.0] * 20  # above 105 → entry
+            + [94.0] * 20   # below 95 → full exit
+        )
+        data_service = MockDataService()
+        data_service.seed("BTC-USD", "1h", bars)
+
+        service = BacktestService(
+            data_service=data_service,
+            backtest_url=lean_url,
+        )
+
+        entry = EntryRuleTrigger(
+            context=ContextSpec(symbol="BTC-USD", tf="1h"),
+            event=EventSlot(condition=price_above(105.0)),
+            action=EntryActionSpec(
+                direction="long",
+                position_policy=PositionPolicy(mode="single"),
+            ),
+        )
+        exit_ = ExitRuleTrigger(
+            context=ContextSpec(symbol="BTC-USD"),
+            event=ExitEventSlot(condition=price_below(95.0)),
+            action=ExitActionSpec(mode="close", size_frac=1.0),
+        )
+
+        strategy, cards = make_strategy(
+            [card_from_archetype("entry_1", entry), card_from_archetype("exit_1", exit_)]
+        )
+
+        result = service.run_backtest(
+            strategy=strategy,
+            cards=cards,
+            config=BacktestConfig(
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 1, 5),
+                symbol="BTC-USD",
+                resolution="1h",
+                initial_cash=100_000.0,
+                fee_pct=0.1,
+                slippage_pct=0.05,
+            ),
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        assert result.response is not None, "No LEAN response"
+        resp = result.response
+
+        trades = resp.trades
+        assert len(trades) == 1
+        assert trades[0].exit_reason == "exit_1"
+
+
+# =============================================================================
 # Section 37: Max State Tracking
 # =============================================================================
 
@@ -6188,4 +6332,3 @@ class TestStateMax:
         assert trade.exit_price is not None
         assert trade.exit_price > trade.entry_price
         assert trade.exit_price < peak_price
-
