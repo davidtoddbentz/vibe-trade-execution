@@ -60,6 +60,7 @@ from vibe_trade_shared.models.ir import (  # noqa: F401
     IntermarketCondition,
     IRExpression,
     LiquidateAction,
+    ReducePositionAction,
     LiteralRef,
     MarketOrderAction,
     MaxStateAction,

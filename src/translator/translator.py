@@ -37,7 +37,6 @@ from .ir import (
     EntryRule,
     ExitRule,
     GateRule,
-    LiquidateAction,
     OverlayRule,
     Resolution,
     StateOp,
@@ -218,10 +217,15 @@ class IRTranslator:
             raise TranslationError(f"Unsupported exit archetype: {archetype}")
 
         self._exit_counter += 1
+
+        # Build exit action from slots (supports partial exits via size_frac)
+        action_spec = slots.get("action", {})
+        action = ActionBuilder.build_exit_action(action_spec)
+
         return ExitRule(
             id=f"exit_{self._exit_counter}",
             condition=condition,
-            action=LiquidateAction(),
+            action=action,
             priority=self._exit_counter,
         )
 

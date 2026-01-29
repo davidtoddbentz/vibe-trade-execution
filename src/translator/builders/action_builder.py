@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.translator.errors import TranslationError
-from src.translator.ir import PositionPolicy, SetHoldingsAction
+from src.translator.ir import LiquidateAction, PositionPolicy, ReducePositionAction, SetHoldingsAction
 
 
 class ActionBuilder:
@@ -76,3 +76,30 @@ class ActionBuilder:
             )
 
         raise TranslationError(f"Unknown sizing type: {sizing_type}")
+
+    @staticmethod
+    def build_exit_action(action_spec: dict[str, Any]) -> LiquidateAction | ReducePositionAction:
+        """Build exit action from ExitActionSpec slots.
+
+        Args:
+            action_spec: Dict with 'mode' and optional 'size_frac'
+
+        Returns:
+            LiquidateAction for full close, ReducePositionAction for partial
+        """
+        mode = action_spec.get("mode", "close")
+        size_frac = action_spec.get("size_frac", 1.0)
+
+        # Full close: use LiquidateAction (backward compatible)
+        if mode == "close" and size_frac == 1.0:
+            return LiquidateAction()
+
+        # Partial close or reduce mode: use ReducePositionAction
+        if mode in ("close", "reduce"):
+            return ReducePositionAction(size_frac=size_frac)
+
+        # Reverse mode: for now, treat as full liquidate (future: ReversePositionAction)
+        if mode == "reverse":
+            return LiquidateAction()
+
+        return LiquidateAction()
