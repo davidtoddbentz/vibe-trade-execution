@@ -9,9 +9,7 @@ from collections.abc import Callable
 from typing import Any
 
 from vibe_trade_shared.models.ir import IndicatorRef
-
-from src.translator.errors import TranslationError
-from src.translator.ir import (
+from vibe_trade_shared.models.ir.indicators import (
     ADX,
     ATR,
     EMA,
@@ -22,7 +20,6 @@ from src.translator.ir import (
     BollingerBands,
     DonchianChannel,
     Gap,
-    Indicator,
     KeltnerChannel,
     Maximum,
     Minimum,
@@ -30,10 +27,13 @@ from src.translator.ir import (
     RateOfChange,
     RollingWindow,
     VolumeSMA,
+    IndicatorUnion,
 )
 
+from src.translator.errors import TranslationError
+
 # Type alias for indicator factory functions
-IndicatorFactory = Callable[[str, dict[str, Any]], Indicator]
+IndicatorFactory = Callable[[str, dict[str, Any]], IndicatorUnion]
 
 
 def generate_indicator_id(prefix: str, params: dict[str, Any] | None) -> str:
@@ -85,7 +85,7 @@ INDICATOR_FACTORIES: dict[str, IndicatorFactory] = {
 }
 
 
-def create_indicator_from_ref(ref: IndicatorRef) -> Indicator:
+def create_indicator_from_ref(ref: IndicatorRef) -> IndicatorUnion:
     """Create a typed Indicator from an IndicatorRef.
 
     Args:

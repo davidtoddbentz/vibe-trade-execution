@@ -1,10 +1,10 @@
 """New IRTranslator implementation with clean architecture.
 
 Uses building blocks:
-- TranslationContext for state accumulation
-- ConditionPipeline for condition processing (lowering -> collection -> extraction)
+- CompilationContext for state accumulation
+- Compiler package for condition building, indicator resolution, state collection
+- RegimeLowerer visitor for lowering regime conditions
 - ActionBuilder for building actions
-- Typed visitors instead of dict manipulation
 
 Translation Flow:
     Strategy + Cards -> IRTranslator -> StrategyIR
@@ -12,11 +12,13 @@ Translation Flow:
 For each enabled attachment:
 1. Get card from cards dict
 2. Parse archetype using parse_archetype
-3. Call archetype.to_ir() to get condition
-4. Process condition through ConditionPipeline
-5. Build appropriate rule type (EntryRule, ExitRule, GateRule, OverlayRule)
-6. Collect state vars and hooks from archetype
-7. Return validated StrategyIR
+3. Build condition via compiler (build_condition)
+4. Lower regime conditions (RegimeLowerer)
+5. Resolve inline indicators (resolve_condition)
+6. Collect state vars and hooks (collect_state)
+7. Resolve state ops (resolve_state_ops)
+8. Build appropriate rule type (EntryRule, ExitRule, GateRule, OverlayRule)
+9. Return validated StrategyIR
 """
 
 from __future__ import annotations
@@ -24,19 +26,17 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from pydantic import TypeAdapter
 from vibe_trade_shared.models import Card, Strategy
-from vibe_trade_shared.models.archetypes import BaseArchetype, parse_archetype
+from vibe_trade_shared.models.archetypes import parse_archetype
 from vibe_trade_shared.models.ir import Condition
 
 from .builders import ActionBuilder
-from .context import TranslationContext
+from .compiler import CompilationContext, build_condition, collect_state, resolve_condition, resolve_state_ops
 from .errors import TranslationError
 from .ir import (
     EntryRule,
     ExitRule,
     GateRule,
-    Indicator,
     LiquidateAction,
     OverlayRule,
     Resolution,
@@ -44,7 +44,7 @@ from .ir import (
     StrategyIR,
 )
 from .ir_validator import validate_ir
-from .pipeline import ConditionPipeline
+from .visitors import RegimeLowerer
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +68,9 @@ class IRTranslator:
     """Translates vibe-trade strategies to StrategyIR using clean architecture.
 
     This implementation uses:
-    - TranslationContext for accumulating state during translation
-    - ConditionPipeline for processing conditions through lowering, collection, extraction
+    - CompilationContext for accumulating state during translation
+    - Compiler package for condition building, indicator resolution, state collection
+    - RegimeLowerer for lowering regime conditions to primitives
     - ActionBuilder for building action objects
 
     Example:
@@ -90,11 +91,8 @@ class IRTranslator:
         # Get first symbol from universe (MVP: single asset)
         self.symbol = strategy.universe[0] if strategy.universe else "BTC-USD"
 
-        # Translation context accumulates artifacts
-        self.ctx = TranslationContext(symbol=self.symbol)
-
-        # Pipeline for processing conditions
-        self.pipeline = ConditionPipeline(self.ctx)
+        # Compilation context accumulates artifacts
+        self.ctx = CompilationContext(symbol=self.symbol)
 
         # Exit counter for unique IDs
         self._exit_counter = 0
@@ -122,8 +120,7 @@ class IRTranslator:
             if not card:
                 raise TranslationError(f"Card not found: {attachment.card_id}")
 
-            # Merge card slots with attachment overrides
-            slots = {**card.slots, **attachment.overrides}
+            slots = card.slots
 
             # Dispatch based on role
             if attachment.role == "entry":
@@ -293,12 +290,13 @@ class IRTranslator:
     ) -> tuple[Condition | None, list[StateOp]]:
         """Translate an archetype to IR condition and state ops.
 
-        This is the core translation method that:
+        This is the core translation method that uses the compiler package:
         1. Parses the archetype from slots
-        2. Gets the IR condition via to_ir()
-        3. Processes the condition through the pipeline (lowering, collection, extraction)
-        4. Resolves inline IndicatorRefs to indicator_id refs
-        5. Collects state vars and hooks from the archetype
+        2. Builds condition via build_condition (replaces archetype.to_ir())
+        3. Lowers regime conditions via RegimeLowerer
+        4. Resolves inline IndicatorRefs via resolve_condition
+        5. Collects state vars and hooks via collect_state
+        6. Resolves state ops via resolve_state_ops
 
         Args:
             archetype_id: The archetype type_id (e.g., "entry.rule_trigger")
@@ -320,278 +318,23 @@ class IRTranslator:
         except ValidationError as e:
             raise TranslationError(f"Invalid slots for {archetype_id}: {e}") from e
 
-        # Step 2: Get IR condition from archetype
-        ir_condition = typed_archetype.to_ir()
-        if ir_condition is None:
-            return (None, [])
+        # Step 2: Build condition via compiler (replaces archetype.to_ir())
+        condition = build_condition(typed_archetype, self.ctx)
 
-        # Step 3: Process condition through pipeline
-        # The pipeline lowers regime conditions, collects indicators, extracts state
-        processed_condition = self.pipeline.process(ir_condition)
+        # Step 3: Lower regime conditions to primitives
+        condition = RegimeLowerer().visit(condition)
 
-        # Step 4: Resolve inline IndicatorRefs to indicator_id refs
-        # Convert to dict, process inline indicators, convert back to typed Condition
-        resolved_condition = self._resolve_inline_indicators(processed_condition)
+        # Step 4: Resolve inline IndicatorRefs to indicator_id refs (typed walk)
+        condition = resolve_condition(condition, self.ctx)
 
-        # Step 5: Collect state and hooks from archetype
-        self._collect_archetype_state(typed_archetype)
+        # Step 5: Collect state vars and hooks from archetype + condition tree
+        collect_state(typed_archetype, condition, self.ctx)
 
-        # Step 6: Get on_fill_ops from archetype
-        on_fill_ops = self._convert_state_ops(typed_archetype.get_on_fill_ops())
+        # Step 6: Resolve inline indicators in on_fill_ops
+        on_fill_ops = resolve_state_ops(typed_archetype.get_on_fill_ops(), self.ctx)
 
         logger.debug(f"Translated archetype {archetype_id}")
-        return (resolved_condition, on_fill_ops)
-
-    def _collect_archetype_state(self, archetype: BaseArchetype) -> None:
-        """Collect state variables and hooks from archetype.
-
-        Args:
-            archetype: The parsed archetype instance
-        """
-        # Collect state variable declarations
-        for state_var in archetype.get_state_vars():
-            self.ctx.add_state_var(state_var)
-
-        # Collect on_bar hooks
-        on_bar_ops = self._convert_state_ops(archetype.get_on_bar_ops())
-        self.ctx.on_bar_hooks.extend(on_bar_ops)
-
-        # Collect on_bar_invested hooks
-        on_bar_invested_ops = self._convert_state_ops(archetype.get_on_bar_invested_ops())
-        self.ctx.on_bar_invested_ops.extend(on_bar_invested_ops)
-
-        # Collect on_fill ops for merging into entry rule later
-        on_fill_ops = self._convert_state_ops(archetype.get_on_fill_ops())
-        self.ctx.on_fill_ops.extend(on_fill_ops)
-
-    def _convert_state_ops(self, shared_ops: list[Any]) -> list[StateOp]:
-        """Convert shared library StateOps to local IR StateOps.
-
-        The shared library uses different class names but compatible serialization.
-
-        Args:
-            shared_ops: List of state operations from archetype
-
-        Returns:
-            List of local IR StateOp objects
-        """
-        if not shared_ops:
-            return []
-
-        result = []
-        adapter = TypeAdapter(StateOp)
-        for op in shared_ops:
-            op_dict = op.model_dump()
-            # Process any inline indicators in the op's value
-            self._process_inline_indicators_in_dict(op_dict)
-            result.append(adapter.validate_python(op_dict))
-        return result
-
-    def _resolve_inline_indicators(self, condition: Condition) -> Condition:
-        """Resolve inline IndicatorRefs to indicator_id references.
-
-        Converts condition to dict, processes inline indicators (which creates
-        indicators and sets indicator_id), then parses back to typed Condition.
-
-        Args:
-            condition: The condition with possibly inline IndicatorRefs
-
-        Returns:
-            Condition with all IndicatorRefs resolved to indicator_id refs
-        """
-        # Convert to dict
-        condition_dict = condition.model_dump()
-
-        # Process inline indicators recursively
-        self._process_inline_indicators_in_dict(condition_dict)
-
-        # Parse back to typed Condition
-        adapter = TypeAdapter(Condition)
-        return adapter.validate_python(condition_dict)
-
-    def _process_inline_indicators_in_dict(self, obj: dict[str, Any]) -> None:
-        """Process inline IndicatorRefs in a dict, registering them as indicators.
-
-        This handles the pattern where IndicatorRef has inline indicator_type + params,
-        which need to be converted to indicator_id references.
-
-        Args:
-            obj: Dict to process (mutated in place)
-        """
-        if not isinstance(obj, dict):
-            return
-
-        # Remove semantic_label (shared library debug field)
-        if "semantic_label" in obj:
-            del obj["semantic_label"]
-
-        # Check for inline IndicatorRef pattern
-        if obj.get("type") == "indicator" and obj.get("indicator_type") is not None:
-            ind_type = obj["indicator_type"]
-            params = obj.get("params") or {}
-            field = obj.get("field", "value")
-
-            # Create the indicator and register it
-            indicator = self._create_indicator(ind_type, params)
-            if indicator:
-                self.ctx.add_indicator(indicator)
-
-                # Handle band fields specially
-                if field in ("upper", "middle", "lower"):
-                    obj.clear()
-                    obj["type"] = "indicator_band"
-                    obj["indicator_id"] = indicator.id
-                    obj["band"] = field
-                else:
-                    obj.clear()
-                    obj["type"] = "indicator"
-                    obj["indicator_id"] = indicator.id
-                    obj["field"] = field
-        else:
-            # Handle indicator_band references - create the band indicator if not exists
-            # This handles references like {"type": "indicator_band", "indicator_id": "bollinger_20", "band": "lower"}
-            if obj.get("type") == "indicator_band":
-                ind_id = obj.get("indicator_id", "")
-                # Parse the indicator ID to determine band type and period
-                # Format: "{band_type}_{period}" e.g., "bollinger_20", "keltner_20"
-                if ind_id and "_" in ind_id and ind_id not in self.ctx.indicators:
-                    parts = ind_id.rsplit("_", 1)
-                    if len(parts) == 2:
-                        band_type, period_str = parts
-                        try:
-                            period = int(period_str)
-                            indicator = self._create_band_indicator(band_type, ind_id, period)
-                            if indicator:
-                                self.ctx.add_indicator(indicator)
-                        except ValueError:
-                            pass  # Invalid period, skip
-
-            # Recurse into nested dicts and lists
-            for value in list(obj.values()):
-                if isinstance(value, dict):
-                    self._process_inline_indicators_in_dict(value)
-                elif isinstance(value, list):
-                    for item in value:
-                        if isinstance(item, dict):
-                            self._process_inline_indicators_in_dict(item)
-
-    def _create_indicator(self, ind_type: str, params: dict[str, Any]) -> Indicator | None:
-        """Create an Indicator from type and params.
-
-        Args:
-            ind_type: Indicator type string (e.g., "EMA", "ATR")
-            params: Indicator parameters
-
-        Returns:
-            Typed Indicator instance, or None if type unknown
-        """
-        from .ir import (
-            ADX,
-            ATR,
-            EMA,
-            RSI,
-            SMA,
-            VWAP,
-            AnchoredVWAP,
-            BollingerBands,
-            DonchianChannel,
-            KeltnerChannel,
-            Maximum,
-            Minimum,
-            Percentile,
-            RateOfChange,
-        )
-
-        # Generate indicator ID
-        ind_id = self._generate_indicator_id(ind_type, params)
-
-        type_map = {
-            "EMA": lambda: EMA(id=ind_id, period=params.get("period", 20)),
-            "SMA": lambda: SMA(id=ind_id, period=params.get("period", 20)),
-            "BB": lambda: BollingerBands(
-                id=ind_id,
-                period=params.get("period", 20),
-                multiplier=params.get("multiplier", 2.0),
-            ),
-            "KC": lambda: KeltnerChannel(
-                id=ind_id,
-                period=params.get("period", 20),
-                multiplier=params.get("multiplier", 2.0),
-            ),
-            "DC": lambda: DonchianChannel(id=ind_id, period=params.get("period", 20)),
-            "ATR": lambda: ATR(id=ind_id, period=params.get("period", 14)),
-            "RSI": lambda: RSI(id=ind_id, period=params.get("period", 14)),
-            "MAX": lambda: Maximum(id=ind_id, period=params.get("period", 50)),
-            "MIN": lambda: Minimum(id=ind_id, period=params.get("period", 50)),
-            "ROC": lambda: RateOfChange(id=ind_id, period=params.get("period", 14)),
-            "ADX": lambda: ADX(id=ind_id, period=params.get("period", 14)),
-            "VWAP": lambda: VWAP(id=ind_id, period=params.get("period", 0)),
-            "AVWAP": lambda: AnchoredVWAP(
-                id=ind_id,
-                anchor=params.get("anchor", "session"),
-                anchor_datetime=params.get("anchor_datetime"),
-            ),
-            "PCTILE": lambda: Percentile(
-                id=ind_id,
-                period=params.get("period", 100),
-                percentile=params.get("percentile", 10.0),
-                source=params.get("source", "close"),
-            ),
-        }
-
-        factory = type_map.get(ind_type.upper())
-        if factory:
-            return factory()
-
-        logger.warning(f"Unknown indicator type: {ind_type}")
-        return None
-
-    def _generate_indicator_id(self, ind_type: str, params: dict[str, Any]) -> str:
-        """Generate a deterministic indicator ID from type and params.
-
-        Args:
-            ind_type: Indicator type (e.g., "EMA")
-            params: Indicator parameters
-
-        Returns:
-            Unique indicator ID string
-        """
-        parts = [ind_type.lower()]
-        for key in sorted(params.keys()):
-            val = params[key]
-            if isinstance(val, float):
-                val_str = str(val).replace(".", "_")
-            else:
-                val_str = str(val)
-            parts.append(val_str)
-        return "_".join(parts)
-
-    def _create_band_indicator(self, band_type: str, ind_id: str, period: int) -> Indicator | None:
-        """Create a band indicator from type, id, and period.
-
-        Args:
-            band_type: Band type string (e.g., "bollinger", "keltner", "donchian")
-            ind_id: The indicator ID to use
-            period: The period for the indicator
-
-        Returns:
-            Typed Indicator instance, or None if type unknown
-        """
-        from .ir import (
-            BollingerBands,
-            DonchianChannel,
-            KeltnerChannel,
-        )
-
-        if band_type == "bollinger":
-            return BollingerBands(id=ind_id, period=period, num_std_dev=2.0)
-        elif band_type == "keltner":
-            return KeltnerChannel(id=ind_id, period=period, multiplier=2.0)
-        elif band_type == "donchian":
-            return DonchianChannel(id=ind_id, period=period)
-
-        logger.warning(f"Unknown band type: {band_type}")
-        return None
+        return (condition, on_fill_ops)
 
     # =========================================================================
     # Helpers

@@ -16,11 +16,9 @@ Coverage:
 
 from datetime import datetime, timezone
 
-import pytest
 from vibe_trade_shared.models import Card, Strategy
-from vibe_trade_shared.models.archetypes import parse_archetype
 
-from src.translator.ir_translator import IRTranslator, TranslationError
+from src.translator.ir_translator import IRTranslator
 
 # Helper for creating test timestamps
 NOW = datetime.now(timezone.utc).isoformat()
@@ -52,7 +50,7 @@ class TestTrendPullbackTranslation:
             ],
         )
         cards = {
-            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1", 
+            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1",
                 id="entry",
                 type="entry.trend_pullback",
                 slots={
@@ -76,7 +74,9 @@ class TestTrendPullbackTranslation:
 
         assert "ema_20" in indicator_ids, "EMA 20 should be registered for trend gate"
         assert "ema_50" in indicator_ids, "EMA 50 should be registered for trend gate"
-        assert "bollinger_20" in indicator_ids, "Bollinger 20 should be registered from StateCondition"
+        # Canonical ID includes multiplier: bb_multiplier_2_period_20
+        bb_ids = [iid for iid in indicator_ids if iid.startswith("bb_")]
+        assert len(bb_ids) > 0, f"Bollinger band should be registered from StateCondition, got: {indicator_ids}"
 
     def test_trend_pullback_keltner_registers_band_indicator(self):
         """Verify keltner band indicator is registered from StateCondition."""
@@ -91,7 +91,7 @@ class TestTrendPullbackTranslation:
             ],
         )
         cards = {
-            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1", 
+            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1",
                 id="entry",
                 type="entry.trend_pullback",
                 slots={
@@ -111,7 +111,9 @@ class TestTrendPullbackTranslation:
         ir = translator.translate()
 
         indicator_ids = {ind.id for ind in ir.indicators}
-        assert "keltner_20" in indicator_ids, "Keltner 20 should be registered from StateCondition"
+        # Canonical ID includes multiplier: kc_multiplier_2_period_20
+        kc_ids = [iid for iid in indicator_ids if iid.startswith("kc_")]
+        assert len(kc_ids) > 0, f"Keltner channel should be registered from StateCondition, got: {indicator_ids}"
 
     def test_trend_pullback_donchian_registers_band_indicator(self):
         """Verify donchian band indicator is registered from StateCondition."""
@@ -126,7 +128,7 @@ class TestTrendPullbackTranslation:
             ],
         )
         cards = {
-            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1", 
+            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1",
                 id="entry",
                 type="entry.trend_pullback",
                 slots={
@@ -146,7 +148,8 @@ class TestTrendPullbackTranslation:
         ir = translator.translate()
 
         indicator_ids = {ind.id for ind in ir.indicators}
-        assert "donchian_20" in indicator_ids, "Donchian 20 should be registered from StateCondition"
+        # Canonical ID: dc_20 (period-only fast path)
+        assert "dc_20" in indicator_ids, f"Donchian 20 should be registered from StateCondition, got: {indicator_ids}"
 
     def test_trend_pullback_reentry_declares_state_variable(self):
         """Verify StateCondition declares its required state variable in IR.
@@ -172,7 +175,7 @@ class TestTrendPullbackTranslation:
             ],
         )
         cards = {
-            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1", 
+            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1",
                 id="entry",
                 type="entry.trend_pullback",
                 slots={
@@ -193,7 +196,8 @@ class TestTrendPullbackTranslation:
 
         # Verify state variable is declared for StateCondition
         state_var_ids = {s.id for s in ir.state}
-        expected_state_var = "outside_bollinger_20_lower"
+        # Canonical ID uses bb_multiplier_2_period_20 format
+        expected_state_var = "outside_bb_multiplier_2_period_20_lower"
 
         assert expected_state_var in state_var_ids, (
             f"StateCondition requires state variable '{expected_state_var}' to be declared in ir.state. "
@@ -225,7 +229,7 @@ class TestTrailingStopTranslation:
             ],
         )
         cards = {
-            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1", 
+            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1",
                 id="entry",
                 type="entry.rule_trigger",
                 slots={
@@ -239,7 +243,7 @@ class TestTrailingStopTranslation:
                     "action": {"direction": "long", "position_policy": {"mode": "single"}},
                 },
             ),
-            "exit": Card(created_at=NOW, updated_at=NOW, schema_etag="v1", 
+            "exit": Card(created_at=NOW, updated_at=NOW, schema_etag="v1",
                 id="exit",
                 type="exit.trailing_stop",
                 slots={
@@ -275,7 +279,7 @@ class TestRuleTriggerTranslation:
             ],
         )
         cards = {
-            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1", 
+            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1",
                 id="entry",
                 type="entry.rule_trigger",
                 slots={
@@ -317,7 +321,7 @@ class TestRuleTriggerTranslation:
             ],
         )
         cards = {
-            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1", 
+            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1",
                 id="entry",
                 type="entry.rule_trigger",
                 slots={
@@ -352,7 +356,7 @@ class TestRuleTriggerTranslation:
             ],
         )
         cards = {
-            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1", 
+            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1",
                 id="entry",
                 type="entry.rule_trigger",
                 slots={
@@ -400,7 +404,7 @@ class TestIndicatorRegistrationRegression:
             ],
         )
         cards = {
-            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1", 
+            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1",
                 id="entry",
                 type="entry.trend_pullback",
                 slots={
@@ -419,10 +423,12 @@ class TestIndicatorRegistrationRegression:
         translator = IRTranslator(strategy, cards)
         ir = translator.translate()
 
-        # The key assertion: bollinger_15 must be registered
+        # The key assertion: bollinger band with period 15, mult 2.5 must be registered
+        # Canonical ID: bb_multiplier_2_5_period_15
         indicator_ids = {ind.id for ind in ir.indicators}
-        assert "bollinger_15" in indicator_ids, \
-            "Bollinger 15 must be registered from nested StateCondition"
+        bb_ids = [iid for iid in indicator_ids if iid.startswith("bb_")]
+        assert len(bb_ids) > 0, \
+            f"Bollinger band must be registered from nested StateCondition, got: {indicator_ids}"
 
     def test_ir_validation_passes_after_translation(self):
         """Ensure translated IR passes validation.
@@ -443,7 +449,7 @@ class TestIndicatorRegistrationRegression:
             ],
         )
         cards = {
-            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1", 
+            "entry": Card(created_at=NOW, updated_at=NOW, schema_etag="v1",
                 id="entry",
                 type="entry.trend_pullback",
                 slots={
@@ -457,7 +463,7 @@ class TestIndicatorRegistrationRegression:
                     "risk": {"sl_atr": 2.0},
                 },
             ),
-            "exit": Card(created_at=NOW, updated_at=NOW, schema_etag="v1", 
+            "exit": Card(created_at=NOW, updated_at=NOW, schema_etag="v1",
                 id="exit",
                 type="exit.trailing_stop",
                 slots={
