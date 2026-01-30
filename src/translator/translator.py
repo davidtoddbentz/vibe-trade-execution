@@ -340,7 +340,7 @@ class IRTranslator:
 
         This is the core translation method that uses the compiler package:
         1. Parses the archetype from slots
-        2. Builds condition via build_condition (replaces archetype.to_ir())
+        2. Builds condition via build_condition
         3. Lowers regime conditions via RegimeLowerer
         4. Resolves inline IndicatorRefs via resolve_condition
         5. Collects state vars and hooks via collect_state
@@ -366,7 +366,7 @@ class IRTranslator:
         except ValidationError as e:
             raise TranslationError(f"Invalid slots for {archetype_id}: {e}") from e
 
-        # Step 2: Build condition via compiler (replaces archetype.to_ir())
+        # Step 2: Build condition via compiler
         condition = build_condition(typed_archetype, self.ctx)
 
         # Step 3: Lower regime conditions to primitives
