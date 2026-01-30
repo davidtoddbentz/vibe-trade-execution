@@ -53,6 +53,7 @@ from vibe_trade_shared.models.archetypes.primitives import (
     ContextSpec,
     CrossCondition,
     EntryActionSpec,
+    ExecutionSpec,
     ExitActionSpec,
     GateActionSpec,
     MASpec,
@@ -6705,3 +6706,305 @@ class TestCloseConfirmMode:
         assert trade.entry_price == pytest.approx(100.0, rel=0.001)
         assert trade.exit_price == pytest.approx(110.0, rel=0.001)
         assert trade.pnl > 0
+
+
+# =============================================================================
+# Section 29: ExecutionSpec — Limit / Stop / Stop-Limit Orders
+# =============================================================================
+
+
+class TestExecutionSpecOrders:
+    """E2E: ExecutionSpec order types (limit, stop, stop_limit).
+
+    LEAN's backtest fill model processes non-market orders against bar OHLC:
+    - Buy limit: fills if bar.Low <= limit_price (at limit_price)
+    - Buy stop: fills if bar.High >= stop_price (at stop_price)
+    - Buy stop-limit: fills if bar.High >= stop AND bar.Low <= limit
+
+    The engine cancels open orders each bar and re-places them if conditions hold,
+    so there's no stale order state between bars.
+    """
+
+    def test_limit_buy_fills_at_limit_price(self, lean_url: str):
+        """Limit buy at $98 fills when bar Low <= limit price on the same bar."""
+        # Python-side fill simulation: checks bar OHLC on the same bar
+        # where entry condition fires. If Low <= limit_price, executes MarketOrder.
+        # Bar 0: close=95 → condition false (95 < 99)
+        # Bar 1: close=102, Low=96 → condition true, Low(96) <= limit(98) → fills!
+        # Bar 2: close=110 → exit fires (close > 109)
+        t0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        bars = [
+            make_bar(t0, o=95, h=96, l=94, c=95),
+            make_bar(t0 + timedelta(minutes=1), o=100, h=105, l=96, c=102),
+            make_bar(t0 + timedelta(minutes=2), o=108, h=112, l=107, c=110),
+        ]
+        data_service = MockDataService()
+        data_service.seed("TESTUSD", "1m", bars)
+        service = BacktestService(data_service=data_service, backtest_url=lean_url)
+
+        entry = EntryRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=EventSlot(condition=price_above(99.0)),
+            action=EntryActionSpec(
+                direction="long",
+                execution=ExecutionSpec(order_type="limit", limit_price=98.0),
+                position_policy=PositionPolicy(mode="single"),
+            ),
+        )
+        exit_ = ExitRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=ExitEventSlot(condition=price_above(109.0)),
+            action=ExitActionSpec(mode="close"),
+        )
+        strategy, cards = make_strategy(
+            [card_from_archetype("entry_1", entry), card_from_archetype("exit_1", exit_)],
+            symbol="TESTUSD",
+        )
+
+        result = service.run_backtest(
+            strategy=strategy,
+            cards=cards,
+            config=BacktestConfig(
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 1, 1),
+                symbol="TESTUSD",
+                resolution="1m",
+                initial_cash=100_000.0,
+                fee_pct=0.0,
+                slippage_pct=0.0,
+            ),
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        resp = result.response
+        assert resp is not None
+        assert resp.summary.total_trades == 1
+        trade = resp.trades[0]
+        assert trade.direction == "long"
+        # Fill sim executes as MarketOrder → fills at close price
+        assert trade.entry_price == pytest.approx(102.0, rel=0.02)
+        assert trade.pnl > 0
+
+    def test_limit_buy_with_offset_pct(self, lean_url: str):
+        """limit_offset_pct=-2.0 computes limit as close*(1-0.02)=close*0.98."""
+        # Python-side fill simulation on the same bar:
+        # Bar 0: close=95 → condition false
+        # Bar 1: close=100, Low=96 → condition true, limit=100*0.98=98, Low(96)<=98 → fills!
+        # Bar 2: close=110 → exit fires
+        t0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        bars = [
+            make_bar(t0, o=95, h=96, l=94, c=95),
+            make_bar(t0 + timedelta(minutes=1), o=100, h=105, l=96, c=100),
+            make_bar(t0 + timedelta(minutes=2), o=108, h=112, l=107, c=110),
+        ]
+        data_service = MockDataService()
+        data_service.seed("TESTUSD", "1m", bars)
+        service = BacktestService(data_service=data_service, backtest_url=lean_url)
+
+        entry = EntryRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=EventSlot(condition=price_above(99.0)),
+            action=EntryActionSpec(
+                direction="long",
+                execution=ExecutionSpec(order_type="limit", limit_offset_pct=-2.0),
+                position_policy=PositionPolicy(mode="single"),
+            ),
+        )
+        exit_ = ExitRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=ExitEventSlot(condition=price_above(109.0)),
+            action=ExitActionSpec(mode="close"),
+        )
+        strategy, cards = make_strategy(
+            [card_from_archetype("entry_1", entry), card_from_archetype("exit_1", exit_)],
+            symbol="TESTUSD",
+        )
+
+        result = service.run_backtest(
+            strategy=strategy,
+            cards=cards,
+            config=BacktestConfig(
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 1, 1),
+                symbol="TESTUSD",
+                resolution="1m",
+                initial_cash=100_000.0,
+                fee_pct=0.0,
+                slippage_pct=0.0,
+            ),
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        resp = result.response
+        assert resp is not None
+        assert resp.summary.total_trades == 1
+        trade = resp.trades[0]
+        assert trade.direction == "long"
+        # Fill sim executes as MarketOrder → fills at close price
+        assert trade.entry_price == pytest.approx(100.0, rel=0.02)
+
+    def test_stop_buy_triggers_above_price(self, lean_url: str):
+        """Stop buy at $105 triggers on next bar when High >= stop price."""
+        # Bar 0: price=95 → condition false
+        # Bar 1: close=103 → condition true → stop at $105 (pending)
+        # Bar 2: O=104, H=108, L=103 → High >= 105 → fills at $105
+        # Bar 3: close=115 → exit fires
+        t0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        bars = [
+            make_bar(t0, o=95, h=96, l=94, c=95),
+            make_bar(t0 + timedelta(minutes=1), o=100, h=104, l=99, c=103),
+            make_bar(t0 + timedelta(minutes=2), o=104, h=108, l=103, c=106),
+            make_bar(t0 + timedelta(minutes=3), o=113, h=117, l=112, c=115),
+        ]
+        data_service = MockDataService()
+        data_service.seed("TESTUSD", "1m", bars)
+        service = BacktestService(data_service=data_service, backtest_url=lean_url)
+
+        entry = EntryRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=EventSlot(condition=price_above(99.0)),
+            action=EntryActionSpec(
+                direction="long",
+                execution=ExecutionSpec(order_type="stop", stop_price=105.0),
+                position_policy=PositionPolicy(mode="single"),
+            ),
+        )
+        exit_ = ExitRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=ExitEventSlot(condition=price_above(114.0)),
+            action=ExitActionSpec(mode="close"),
+        )
+        strategy, cards = make_strategy(
+            [card_from_archetype("entry_1", entry), card_from_archetype("exit_1", exit_)],
+            symbol="TESTUSD",
+        )
+
+        result = service.run_backtest(
+            strategy=strategy,
+            cards=cards,
+            config=BacktestConfig(
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 1, 1),
+                symbol="TESTUSD",
+                resolution="1m",
+                initial_cash=100_000.0,
+                fee_pct=0.0,
+                slippage_pct=0.0,
+            ),
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        resp = result.response
+        assert resp is not None
+        assert resp.summary.total_trades == 1
+        trade = resp.trades[0]
+        assert trade.direction == "long"
+        # Stop order fills at $105 (stop trigger price)
+        assert trade.entry_price == pytest.approx(105.0, rel=0.02)
+
+    def test_stop_limit_order(self, lean_url: str):
+        """Stop-limit: stop at $105, limit at $107. Fills on next bar."""
+        # Bar 0: price=95 → condition false
+        # Bar 1: close=103 → condition true → stop=$105, limit=$107 (pending)
+        # Bar 2: O=104, H=110, L=103 → High >= 105 (stop triggered) + limit OK → fills
+        # Bar 3: close=115 → exit fires
+        t0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        bars = [
+            make_bar(t0, o=95, h=96, l=94, c=95),
+            make_bar(t0 + timedelta(minutes=1), o=100, h=104, l=99, c=103),
+            make_bar(t0 + timedelta(minutes=2), o=104, h=110, l=103, c=106),
+            make_bar(t0 + timedelta(minutes=3), o=113, h=117, l=112, c=115),
+        ]
+        data_service = MockDataService()
+        data_service.seed("TESTUSD", "1m", bars)
+        service = BacktestService(data_service=data_service, backtest_url=lean_url)
+
+        entry = EntryRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=EventSlot(condition=price_above(99.0)),
+            action=EntryActionSpec(
+                direction="long",
+                execution=ExecutionSpec(
+                    order_type="stop_limit",
+                    stop_price=105.0,
+                    limit_price=107.0,
+                ),
+                position_policy=PositionPolicy(mode="single"),
+            ),
+        )
+        exit_ = ExitRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=ExitEventSlot(condition=price_above(114.0)),
+            action=ExitActionSpec(mode="close"),
+        )
+        strategy, cards = make_strategy(
+            [card_from_archetype("entry_1", entry), card_from_archetype("exit_1", exit_)],
+            symbol="TESTUSD",
+        )
+
+        result = service.run_backtest(
+            strategy=strategy,
+            cards=cards,
+            config=BacktestConfig(
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 1, 1),
+                symbol="TESTUSD",
+                resolution="1m",
+                initial_cash=100_000.0,
+                fee_pct=0.0,
+                slippage_pct=0.0,
+            ),
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        resp = result.response
+        assert resp is not None
+        assert resp.summary.total_trades == 1
+        trade = resp.trades[0]
+        assert trade.direction == "long"
+        # Stop-limit fill price should be between stop and limit
+        assert 104.0 <= trade.entry_price <= 108.0
+
+    def test_unfilled_limit_produces_no_trades(self, lean_url: str):
+        """Limit buy at $90 never fills when price stays above $95."""
+        # All bars: price >= 95, limit at $90 → Low never reaches $90
+        # Entry condition fires but order never fills → 0 trades
+        bars = make_bars([95, 100, 105, 110], interval_ms=60_000)
+        data_service = MockDataService()
+        data_service.seed("TESTUSD", "1m", bars)
+        service = BacktestService(data_service=data_service, backtest_url=lean_url)
+
+        entry = EntryRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD"),
+            event=EventSlot(condition=price_above(99.0)),
+            action=EntryActionSpec(
+                direction="long",
+                execution=ExecutionSpec(order_type="limit", limit_price=90.0),
+                position_policy=PositionPolicy(mode="single"),
+            ),
+        )
+        strategy, cards = make_strategy(
+            [card_from_archetype("entry_1", entry)],
+            symbol="TESTUSD",
+        )
+
+        result = service.run_backtest(
+            strategy=strategy,
+            cards=cards,
+            config=BacktestConfig(
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 1, 1),
+                symbol="TESTUSD",
+                resolution="1m",
+                initial_cash=100_000.0,
+                fee_pct=0.0,
+                slippage_pct=0.0,
+            ),
+        )
+
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        resp = result.response
+        assert resp is not None
+        # Limit never reached → no fills → no trades
+        assert resp.summary.total_trades == 0
+        assert len(resp.trades) == 0

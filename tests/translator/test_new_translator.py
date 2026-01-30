@@ -355,23 +355,96 @@ class TestEntryFieldRejection:
             )
         }
 
-    def test_non_market_execution_raises(self):
-        """Non-market order types raise until implemented."""
-        strategy, cards = self._make_entry_strategy({
-            "execution": {"order_type": "limit", "limit_price": 100.0}
-        })
+    def test_market_execution_default(self):
+        """No execution spec defaults to market order."""
+        strategy, cards = self._make_entry_strategy({})
         translator = IRTranslator(strategy, cards)
-        with pytest.raises(TranslationError, match="not yet supported"):
-            translator.translate()
+        ir = translator.translate()
+        assert ir.entry is not None
+        assert ir.entry.action.order_type == "market"
+        assert ir.entry.action.limit_price_ref is None
+        assert ir.entry.action.stop_price_ref is None
 
-    def test_market_execution_allowed(self):
-        """Market execution should not raise."""
+    def test_market_execution_explicit(self):
+        """Explicit market execution should not raise."""
         strategy, cards = self._make_entry_strategy({
             "execution": {"order_type": "market"}
         })
         translator = IRTranslator(strategy, cards)
         ir = translator.translate()
-        assert ir is not None
+        assert ir.entry is not None
+        assert ir.entry.action.order_type == "market"
+
+    def test_limit_order_absolute_price(self):
+        """Limit order with absolute price produces LiteralRef."""
+        strategy, cards = self._make_entry_strategy({
+            "execution": {"order_type": "limit", "limit_price": 50000.0}
+        })
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+        assert ir.entry is not None
+        assert ir.entry.action.order_type == "limit"
+        assert ir.entry.action.limit_price_ref is not None
+        assert ir.entry.action.limit_price_ref.type == "literal"
+        assert ir.entry.action.limit_price_ref.value == 50000.0
+        assert ir.entry.action.stop_price_ref is None
+
+    def test_limit_order_offset_pct(self):
+        """Limit order with offset_pct produces IRExpression (close * multiplier)."""
+        strategy, cards = self._make_entry_strategy({
+            "execution": {"order_type": "limit", "limit_offset_pct": -2.0}
+        })
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+        assert ir.entry is not None
+        assert ir.entry.action.order_type == "limit"
+        ref = ir.entry.action.limit_price_ref
+        assert ref is not None
+        assert ref.type == "expr"
+        assert ref.op == "*"
+        # Left: PriceRef(field="close"), Right: LiteralRef(value=0.98)
+        assert ref.left.type == "price"
+        assert ref.right.type == "literal"
+        assert ref.right.value == pytest.approx(0.98)
+
+    def test_stop_order(self):
+        """Stop order produces stop_price_ref as LiteralRef."""
+        strategy, cards = self._make_entry_strategy({
+            "execution": {"order_type": "stop", "stop_price": 48000.0}
+        })
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+        assert ir.entry is not None
+        assert ir.entry.action.order_type == "stop"
+        assert ir.entry.action.stop_price_ref is not None
+        assert ir.entry.action.stop_price_ref.type == "literal"
+        assert ir.entry.action.stop_price_ref.value == 48000.0
+        assert ir.entry.action.limit_price_ref is None
+
+    def test_stop_limit_order(self):
+        """Stop-limit order produces both price refs."""
+        strategy, cards = self._make_entry_strategy({
+            "execution": {
+                "order_type": "stop_limit",
+                "stop_price": 48000.0,
+                "limit_price": 47500.0,
+            }
+        })
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+        assert ir.entry is not None
+        assert ir.entry.action.order_type == "stop_limit"
+        assert ir.entry.action.stop_price_ref.value == 48000.0
+        assert ir.entry.action.limit_price_ref.value == 47500.0
+
+    def test_time_in_force_passthrough(self):
+        """Time in force is passed through."""
+        strategy, cards = self._make_entry_strategy({
+            "execution": {"order_type": "limit", "limit_price": 100.0, "time_in_force": "day"}
+        })
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+        assert ir.entry.action.time_in_force == "day"
 
     def test_close_confirm_accepted(self):
         """close_confirm is a no-op (engine evaluates on bar close by default)."""

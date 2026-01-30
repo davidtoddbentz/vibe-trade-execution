@@ -6,8 +6,12 @@ from typing import Any
 
 from src.translator.errors import TranslationError
 from src.translator.ir import (
+    IRExpression,
     LiquidateAction,
+    LiteralRef,
     PositionPolicy,
+    PriceField,
+    PriceRef,
     ReducePositionAction,
     SetHoldingsAction,
 )
@@ -17,6 +21,61 @@ class ActionBuilder:
     """Builds action objects from slot configurations."""
 
     DEFAULT_ALLOCATION = 0.95  # 95%
+
+    @staticmethod
+    def build_execution_params(
+        execution: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Build execution parameters from ExecutionSpec slots.
+
+        Converts archetype-level ExecutionSpec into IR-level fields:
+        - order_type: passed through
+        - limit_price -> LiteralRef
+        - limit_offset_pct -> IRExpression(close * (1 + offset/100))
+        - stop_price -> LiteralRef
+        - time_in_force: passed through
+
+        Returns:
+            Dict with order_type, limit_price_ref, stop_price_ref, time_in_force
+            to be merged into SetHoldingsAction kwargs.
+        """
+        if not execution:
+            return {}
+
+        order_type = execution.get("order_type", "market")
+        if order_type == "market":
+            return {}
+
+        result: dict[str, Any] = {"order_type": order_type}
+
+        # Resolve limit price
+        limit_price = execution.get("limit_price")
+        limit_offset_pct = execution.get("limit_offset_pct")
+
+        if limit_price is not None:
+            result["limit_price_ref"] = LiteralRef(value=limit_price)
+        elif limit_offset_pct is not None:
+            # close * (1 + offset/100)
+            # Buy limit below market: offset is negative (e.g., -2.0 => close * 0.98)
+            # Sell limit above market: offset is positive (e.g., 2.0 => close * 1.02)
+            multiplier = 1.0 + (limit_offset_pct / 100.0)
+            result["limit_price_ref"] = IRExpression(
+                op="*",
+                left=PriceRef(field=PriceField.CLOSE),
+                right=LiteralRef(value=multiplier),
+            )
+
+        # Resolve stop price
+        stop_price = execution.get("stop_price")
+        if stop_price is not None:
+            result["stop_price_ref"] = LiteralRef(value=stop_price)
+
+        # Time in force
+        tif = execution.get("time_in_force", "gtc")
+        if tif in ("gtc", "day"):
+            result["time_in_force"] = tif
+
+        return result
 
     @staticmethod
     def build_holdings_action(
@@ -47,7 +106,17 @@ class ActionBuilder:
         # Extract sizing constraints
         min_usd = sizing.get("min_usd") if sizing else None
         max_usd = sizing.get("max_usd") if sizing else None
-        common = dict(position_policy=position_policy, min_usd=min_usd, max_usd=max_usd)
+
+        # Build execution params from ExecutionSpec
+        execution = action.get("execution")
+        exec_params = ActionBuilder.build_execution_params(execution)
+
+        common = dict(
+            position_policy=position_policy,
+            min_usd=min_usd,
+            max_usd=max_usd,
+            **exec_params,
+        )
 
         # Handle no sizing - default to percentage
         if sizing is None:

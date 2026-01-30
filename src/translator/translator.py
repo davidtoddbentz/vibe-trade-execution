@@ -197,13 +197,7 @@ class IRTranslator:
 
         # Get action config and build holdings action
         action_spec = slots.get("action", {})
-        # Reject unsupported fields with clear errors
-        execution = action_spec.get("execution")
-        if execution and execution.get("order_type", "market") != "market":
-            order_type = execution["order_type"]
-            raise TranslationError(
-                f"Order type '{order_type}' is not yet supported. Only market orders are currently implemented."
-            )
+        # Execution params (order_type, limit_price, etc.) handled by ActionBuilder.
 
         # close_confirm is a no-op: engine evaluates on bar close by default.
         # Reject truly unsupported confirm modes (future: "immediate" etc.)
