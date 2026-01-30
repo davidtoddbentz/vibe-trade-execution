@@ -8,7 +8,6 @@ This module tests that:
 These tests require a connection to BigQuery (production or emulator).
 """
 
-import os
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from decimal import Decimal

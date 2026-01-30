@@ -226,6 +226,17 @@ class BacktestService:
             ir_dict = strategy_ir.model_dump()
             ir_json = strategy_ir.model_dump_json(indent=2)
 
+            # LEAN start_date must match earliest available data bar.
+            # For minute resolution, LEAN reads per-day ZIP files and won't
+            # find data for dates before our first bar. trading_start_date
+            # already prevents trades during warmup.
+            if bars:
+                lean_start = datetime.fromtimestamp(
+                    bars[0].t / 1000, tz=timezone.utc
+                ).date()
+            else:
+                lean_start = warmup_start.date()
+
             lean_request = LEANBacktestRequest(
                 strategy_ir=ir_dict,
                 data=BacktestDataInput(
@@ -234,8 +245,7 @@ class BacktestService:
                     bars=bars,
                 ),
                 config=BacktestConfig(
-                    # Warmup start date for LEAN data processing
-                    start_date=warmup_start.date(),
+                    start_date=lean_start,
                     end_date=config.end_date,
                     initial_cash=config.initial_cash,
                     # User's original start date prevents trades during warmup

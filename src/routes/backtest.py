@@ -80,72 +80,6 @@ def _extract_timeframe_from_cards(cards: dict[str, Any]) -> str:
     return "1h"  # Default fallback
 
 
-def _apply_card_overrides(
-    cards: dict[str, Any], overrides: dict[str, dict[str, float]] | None
-) -> dict[str, Any]:
-    """Apply parameter overrides to cards.
-
-    Args:
-        cards: Dict of card_id -> Card objects
-        overrides: Dict of card_id -> {path: value} overrides
-
-    Returns:
-        New dict with overrides applied (cards are deep-copied)
-    """
-    if not overrides:
-        return cards
-
-    import copy
-
-    result = {}
-    for card_id, card in cards.items():
-        if card_id in overrides:
-            # Deep copy the card and apply overrides
-            card_overrides = overrides[card_id]
-
-            # Get slots (handle both dict and object)
-            if hasattr(card, "slots"):
-                slots = copy.deepcopy(dict(card.slots))
-            else:
-                slots = copy.deepcopy(card.get("slots", {}))
-
-            # Apply each override
-            for path, value in card_overrides.items():
-                _set_nested_value(slots, path, value)
-
-            # Create modified card
-            if hasattr(card, "model_copy"):
-                # Pydantic model
-                result[card_id] = card.model_copy(update={"slots": slots})
-            elif hasattr(card, "_replace"):
-                # Named tuple
-                result[card_id] = card._replace(slots=slots)
-            else:
-                # Dict-like
-                card_copy = copy.deepcopy(card)
-                card_copy["slots"] = slots
-                result[card_id] = card_copy
-
-            logger.info(f"Applied {len(card_overrides)} overrides to card {card_id}")
-        else:
-            result[card_id] = card
-
-    return result
-
-
-def _set_nested_value(obj: dict, path: str, value: Any) -> None:
-    """Set a value at a nested path (e.g., 'event.dip_band.mult')."""
-    parts = path.split(".")
-    current = obj
-
-    for part in parts[:-1]:
-        if part not in current:
-            current[part] = {}
-        current = current[part]
-
-    current[parts[-1]] = value
-
-
 class BacktestRequestModel(BaseModel):
     """Request to run a backtest.
 
@@ -160,11 +94,6 @@ class BacktestRequestModel(BaseModel):
     # Trading costs
     fee_pct: float = 0.0  # Fee as percentage of trade value (0.1 = 0.1%)
     slippage_pct: float = 0.0  # Slippage as percentage of price (0.05 = 0.05%)
-    # Parameter overrides: card_id -> path -> value
-    # e.g., {"card123": {"event.dip_band.mult": 2.5}}
-    card_overrides: dict[str, dict[str, float]] | None = None
-    # Inline bars for testing (bypasses BigQuery)
-    inline_bars: list[dict[str, Any]] | None = None
 
 
 class BacktestStatus(str, Enum):
@@ -225,11 +154,6 @@ async def run_backtest(request: BacktestRequestModel) -> BacktestResponseModel:
         card_ids = [att.card_id for att in (strategy.attachments or [])]
         cards_list = [card_repo.get_by_id(cid) for cid in card_ids]
         cards = {c.id: c for c in cards_list if c is not None}
-
-        # Apply parameter overrides if provided
-        if request.card_overrides:
-            logger.info(f"Backtest {backtest_id}: Applying overrides to {len(request.card_overrides)} cards")
-            cards = _apply_card_overrides(cards, request.card_overrides)
 
         # Extract symbol and timeframe from entry card context
         symbol = _extract_symbol_from_cards(cards)
@@ -294,28 +218,6 @@ async def _run_backtest(
         emulator_host=emulator_host,
     )
 
-    # Convert inline_bars dicts to OHLCVBar objects if provided
-    effective_data_service = data_service
-    if request.inline_bars:
-        from vibe_trade_shared.models.data import OHLCVBar
-        from src.service.data_service import MockDataService
-
-        inline_bars = [
-            OHLCVBar(
-                t=bar["timestamp"],
-                o=bar["open"],
-                h=bar["high"],
-                l=bar["low"],
-                c=bar["close"],
-                v=bar["volume"],
-            )
-            for bar in request.inline_bars
-        ]
-        mock_ds = MockDataService()
-        mock_ds.seed(symbol, resolution, inline_bars)
-        effective_data_service = mock_ds
-        logger.info(f"Backtest {backtest_id}: Using {len(inline_bars)} inline bars via MockDataService")
-
     # Get auth token for Cloud Run service-to-service calls
     auth_token = None
     if backtest_url and backtest_url.startswith("https://"):
@@ -329,7 +231,7 @@ async def _run_backtest(
             logger.info(f"Backtest {backtest_id}: Got auth token for {audience}")
 
     service = BacktestService(
-        data_service=effective_data_service,
+        data_service=data_service,
         backtest_url=backtest_url,
         auth_token=auth_token,
     )

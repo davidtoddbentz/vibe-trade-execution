@@ -1,7 +1,8 @@
 .PHONY: install locally run test test-cov lint lint-fix format format-check check ci clean \
-	test-e2e test-e2e-smoke test-e2e-conditions test-e2e-indicators test-e2e-exits test-e2e-gates test-e2e-shorts test-e2e-class \
+	test-e2e test-e2e-parallel test-e2e-parallel-auto test-e2e-smoke test-e2e-fast test-e2e-slow test-e2e-fast-parallel \
+	test-e2e-conditions test-e2e-indicators test-e2e-exits test-e2e-gates test-e2e-shorts test-e2e-class \
 	backtest-container-start backtest-container-stop backtest-container-logs \
-	lean-list lean-start lean-stop lean-logs \
+	lean-list lean-start lean-stop lean-logs lean-parallel-start lean-parallel-stop \
 	build-image docker-build docker-build-lean docker-build-lean-service docker-push docker-build-push \
 	deploy deploy-lean deploy-backtest-service force-revision
 
@@ -60,33 +61,63 @@ test-cov:
 # E2E Test Commands (require LEAN backtest service running)
 # =============================================================================
 
-# Run all e2e tests (requires LEAN: make backtest-container-start)
+# Run all e2e tests (containers are created automatically per worker)
 test-e2e:
-	uv run python -m pytest tests/e2e/ -v
+	@echo "🚀 Running all E2E tests..."
+	uv run pytest tests/test_e2e_prototype.py -v
 
-# Quick smoke test - basic functionality (fast)
+# Run e2e tests in parallel (requires parallel LEAN containers: make lean-parallel-start)
+# Uses pytest-xdist with 4 workers, distributes across LEAN containers on ports 8081-8084
+test-e2e-parallel:
+	@echo "🚀 Running E2E tests in parallel (4 workers)..."
+	@echo "   Containers are created automatically per worker"
+	uv run pytest tests/test_e2e_prototype.py -n 4 -v
+
+# Run e2e tests with auto-detected worker count
+test-e2e-parallel-auto:
+	@echo "🚀 Running E2E tests in parallel (auto workers)..."
+	@echo "   Containers are created automatically per worker"
+	uv run pytest tests/test_e2e_prototype.py -n auto -v
+
+# Quick smoke test - basic functionality (~15 tests, ~2 min)
 test-e2e-smoke:
-	uv run python -m pytest tests/e2e/test_backtest_e2e.py -v -k "test_entry_on_exact_bar or test_crossover_entry"
+	@echo "🚀 Running smoke tests (quick validation)..."
+	uv run pytest tests/test_e2e_prototype.py -m smoke -v
+
+# Run only fast tests (<5s each)
+test-e2e-fast:
+	@echo "🚀 Running fast tests only..."
+	uv run pytest tests/test_e2e_prototype.py -m fast -v
+
+# Run only slow tests (>10s each)
+test-e2e-slow:
+	@echo "🚀 Running slow tests only..."
+	uv run pytest tests/test_e2e_prototype.py -m slow -v
+
+# Run fast tests in parallel
+test-e2e-fast-parallel:
+	@echo "🚀 Running fast tests in parallel (4 workers)..."
+	uv run pytest tests/test_e2e_prototype.py -m fast -n 4 -v
 
 # Test conditions (allOf, anyOf, not, compare operators)
 test-e2e-conditions:
-	uv run python -m pytest tests/e2e/test_backtest_e2e.py -v -k "Condition or Operators"
+	uv run pytest tests/test_e2e_prototype.py -v -k "CompareOperators or LogicalComposition"
 
-# Test indicators (EMA, BB, RSI, MACD, etc.)
+# Test indicators (EMA, BB, RSI, etc.)
 test-e2e-indicators:
-	uv run python -m pytest tests/e2e/test_backtest_e2e.py -v -k "EMA or Bollinger or RSI or MACD or ADX or ATR or SMA or Keltner or Donchian or VWAP"
+	uv run pytest tests/test_e2e_prototype.py -v -k "RSI or EMA or Bollinger or Keltner"
 
 # Test exits and state
 test-e2e-exits:
-	uv run python -m pytest tests/e2e/test_backtest_e2e.py -v -k "Exit or State or Stop"
+	uv run pytest tests/test_e2e_prototype.py -v -k "Exit or TrailingStop"
 
-# Test gates and overlays
+# Test gates
 test-e2e-gates:
-	uv run python -m pytest tests/e2e/test_backtest_e2e.py -v -k "Gate or Overlay"
+	uv run pytest tests/test_e2e_prototype.py -v -k "Gate"
 
 # Test short positions
 test-e2e-shorts:
-	uv run python -m pytest tests/e2e/test_backtest_e2e.py -v -k "Short"
+	uv run pytest tests/test_e2e_prototype.py -v -k "Short"
 
 # Run a specific test class (e.g., make test-e2e-class CLASS=TestBollingerBands)
 test-e2e-class:
@@ -94,7 +125,57 @@ test-e2e-class:
 		echo "Usage: make test-e2e-class CLASS=<TestClassName>"; \
 		exit 1; \
 	fi
-	uv run python -m pytest tests/e2e/test_backtest_e2e.py -v -k "$(CLASS)"
+	uv run pytest tests/test_e2e_prototype.py -v -k "$(CLASS)"
+
+# =============================================================================
+# Parallel LEAN Container Management
+# =============================================================================
+
+# Start 4 parallel LEAN containers (ports 8081-8084) for parallel test execution
+lean-parallel-start:
+	@echo "🚀 Starting 4 parallel LEAN containers..."
+	@cd ../vibe-trade-lean && \
+		if command -v docker-compose > /dev/null 2>&1; then \
+			docker-compose -f docker-compose.parallel.yml up -d; \
+		elif command -v docker > /dev/null 2>&1; then \
+			docker compose -f docker-compose.parallel.yml up -d; \
+		else \
+			echo "❌ Error: docker-compose or docker not found"; \
+			exit 1; \
+		fi
+	@echo "✅ Containers started on ports 8081-8084"
+	@echo "   Health checks:"
+	@sleep 3
+	@for port in 8081 8082 8083 8084; do \
+		echo -n "   Port $$port: "; \
+		curl -s http://localhost:$$port/health > /dev/null && echo "✅" || echo "❌"; \
+	done
+
+# Stop parallel LEAN containers
+lean-parallel-stop:
+	@echo "🛑 Stopping parallel LEAN containers..."
+	@cd ../vibe-trade-lean && \
+		if command -v docker-compose > /dev/null 2>&1; then \
+			docker-compose -f docker-compose.parallel.yml down; \
+		elif command -v docker > /dev/null 2>&1; then \
+			docker compose -f docker-compose.parallel.yml down; \
+		else \
+			echo "❌ Error: docker-compose or docker not found"; \
+			exit 1; \
+		fi
+	@echo "✅ Containers stopped"
+
+# View logs from parallel LEAN containers
+lean-parallel-logs:
+	@cd ../vibe-trade-lean && \
+		if command -v docker-compose > /dev/null 2>&1; then \
+			docker-compose -f docker-compose.parallel.yml logs -f; \
+		elif command -v docker > /dev/null 2>&1; then \
+			docker compose -f docker-compose.parallel.yml logs -f; \
+		else \
+			echo "❌ Error: docker-compose or docker not found"; \
+			exit 1; \
+		fi
 
 lint:
 	uv run ruff check .

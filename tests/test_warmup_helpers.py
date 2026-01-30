@@ -1,8 +1,7 @@
 """Tests for warmup calculation helper functions."""
 
-import pytest
 
-from tests.conftest import calculate_warmup_bars, calculate_trading_bar
+from tests.conftest import calculate_trading_bar, calculate_warmup_bars
 
 
 class TestCalculateWarmupBars:

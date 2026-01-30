@@ -1,7 +1,7 @@
 """Shared test fixtures and helpers."""
 
 import os
-from typing import Iterator
+import time
 
 import httpx
 import pytest
@@ -136,130 +136,168 @@ def make_strategy(
 
 
 # ---------------------------------------------------------------------------
-# E2E Test Fixtures (for parallel execution)
+# E2E Test Fixtures (with auto-restart on container crash)
 # ---------------------------------------------------------------------------
 
 def _get_worker_id() -> int:
     """Get pytest-xdist worker ID, or 0 if not using xdist."""
     worker_id = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
-    # Extract number from "gw0", "gw1", etc.
     try:
         return int(worker_id.replace("gw", ""))
     except ValueError:
         return 0
 
 
-@pytest.fixture(scope="session")
-def lean_container():
-    """Create one LEAN container per worker (dynamic port allocation).
-    
-    First checks for an existing LEAN service (e.g., from make local-up)
-    at standard ports. Falls back to creating a new container per worker.
-    """
-    # Check for existing LEAN service first (from make local-up or docker-compose)
-    for port in [8083, 8081]:
-        try:
-            r = httpx.get(f"http://localhost:{port}/health", timeout=2.0)
-            if r.status_code == 200:
-                yield f"http://localhost:{port}/backtest"
-                return
-        except (httpx.ConnectError, httpx.TimeoutException):
-            continue
+class _LeanContainerManager:
+    """Manages a LEAN Docker container with auto-restart on crash.
 
-    try:
-        import docker
-    except ImportError:
-        pytest.skip("docker package not installed. Install with: uv sync --group dev")
-    
-    worker_id = _get_worker_id()
-    client = docker.from_env()
-    container_name = f"lean-test-{worker_id}"
-    
-    # Check if container already exists (from previous test run)
-    try:
-        existing = client.containers.get(container_name)
-        if existing.status == "running":
-            # Get the port
-            ports = existing.attrs["NetworkSettings"]["Ports"]
-            if "8080/tcp" in ports and ports["8080/tcp"]:
-                port = ports["8080/tcp"][0]["HostPort"]
-                # Verify it's healthy
-                try:
-                    r = httpx.get(f"http://localhost:{port}/health", timeout=2.0)
-                    if r.status_code == 200:
-                        yield f"http://localhost:{port}/backtest"
-                        return
-                except (httpx.ConnectError, httpx.TimeoutException):
-                    # Container exists but not healthy, remove it
-                    existing.remove(force=True)
-    except docker.errors.NotFound:
-        pass
-    
-    # Create new container with dynamic port allocation
-    try:
-        container = client.containers.run(
-            "lean-backtest-service:latest",
-            name=container_name,
-            ports={"8080": None},  # Dynamic port allocation
-            detach=True,
-            remove=True,  # Auto-remove on stop
-            environment={"PYTHONPATH": "/Lean"},
-        )
-        
-        # Get assigned port
-        container.reload()  # Refresh to get port assignment
-        ports = container.attrs["NetworkSettings"]["Ports"]
-        if "8080/tcp" not in ports or not ports["8080/tcp"]:
-            container.remove(force=True)
-            pytest.skip(f"Failed to get port for container {container_name}")
-        
-        port = ports["8080/tcp"][0]["HostPort"]
-        url = f"http://localhost:{port}/backtest"
-        
-        # Wait for health (max 30 seconds)
-        import time
-        for attempt in range(30):
+    The LEAN .NET runtime accumulates memory across sequential subprocess runs,
+    causing the container to crash after ~10-15 backtests. This manager detects
+    crashes and transparently restarts the container with a new port.
+    """
+
+    def __init__(self):
+        self._external_url: str | None = None
+        self._client = None
+        self._container = None
+        self._container_name: str | None = None
+        self._port: str | None = None
+
+    def _check_external_service(self) -> str | None:
+        """Check for a pre-existing LEAN service on standard ports."""
+        for port in [8083, 8081]:
             try:
                 r = httpx.get(f"http://localhost:{port}/health", timeout=2.0)
                 if r.status_code == 200:
-                    yield url
-                    return
-            except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError, httpx.RemoteProtocolError):
-                if attempt < 29:  # Don't sleep on last attempt
-                    time.sleep(1)
+                    return f"http://localhost:{port}/backtest"
+            except (httpx.ConnectError, httpx.TimeoutException):
                 continue
-        
-        # Not healthy, cleanup and skip
+        return None
+
+    def _start_container(self) -> str:
+        """Start (or restart) a managed Docker container. Returns backtest URL."""
         try:
-            container.remove(force=True)
-        except:
-            pass
-        pytest.skip(f"Container {container_name} on port {port} not healthy after 30s. Check logs: docker logs {container_name}")
-        
-    except docker.errors.ImageNotFound:
-        pytest.skip(
-            "LEAN image 'lean-backtest-service:latest' not found. "
-            "Build it with: cd ../vibe-trade-lean && make build"
-        )
-    except docker.errors.APIError as e:
-        pytest.skip(f"Failed to create container: {e}")
+            import docker
+        except ImportError:
+            pytest.skip("docker package not installed. Install with: uv sync --group dev")
+
+        if self._client is None:
+            self._client = docker.from_env()
+            worker_id = _get_worker_id()
+            self._container_name = f"lean-test-{worker_id}"
+
+        # Remove old container if it exists (retry to handle Docker race conditions)
+        for _attempt in range(3):
+            try:
+                old = self._client.containers.get(self._container_name)
+                old.remove(force=True)
+                time.sleep(3)
+            except Exception:
+                break  # Container doesn't exist, good to go
+
+        try:
+            self._container = self._client.containers.run(
+                "lean-backtest-service:latest",
+                name=self._container_name,
+                ports={"8080": None},
+                detach=True,
+                environment={"PYTHONPATH": "/Lean"},
+            )
+
+            self._container.reload()
+            ports = self._container.attrs["NetworkSettings"]["Ports"]
+            if "8080/tcp" not in ports or not ports["8080/tcp"]:
+                self._container.remove(force=True)
+                pytest.skip(f"Failed to get port for {self._container_name}")
+
+            self._port = ports["8080/tcp"][0]["HostPort"]
+            url = f"http://localhost:{self._port}/backtest"
+
+            for attempt in range(30):
+                try:
+                    r = httpx.get(
+                        f"http://localhost:{self._port}/health", timeout=2.0
+                    )
+                    if r.status_code == 200:
+                        return url
+                except (
+                    httpx.ConnectError,
+                    httpx.TimeoutException,
+                    httpx.ReadError,
+                    httpx.RemoteProtocolError,
+                ):
+                    if attempt < 29:
+                        time.sleep(1)
+                    continue
+
+            pytest.skip(f"Container {self._container_name} not healthy after 30s")
+
+        except Exception as e:
+            if "ImageNotFound" in type(e).__name__:
+                pytest.skip(
+                    "LEAN image 'lean-backtest-service:latest' not found. "
+                    "Build it with: cd ../vibe-trade-lean && make build"
+                )
+            pytest.skip(f"Failed to create container: {e}")
+        return ""  # unreachable
+
+    def get_url(self) -> str:
+        """Get a healthy LEAN backtest URL, restarting container if needed."""
+        # If using an external service, check health
+        if self._external_url is not None:
+            try:
+                port = self._external_url.rsplit(":", 1)[-1].split("/")[0]
+                r = httpx.get(f"http://localhost:{port}/health", timeout=2.0)
+                if r.status_code == 200:
+                    return self._external_url
+            except (httpx.ConnectError, httpx.TimeoutException):
+                # External service died -- fall through to managed container
+                self._external_url = None
+
+        # If we have a managed container, check health
+        if self._port is not None:
+            try:
+                r = httpx.get(
+                    f"http://localhost:{self._port}/health", timeout=2.0
+                )
+                if r.status_code == 200:
+                    return f"http://localhost:{self._port}/backtest"
+            except (httpx.ConnectError, httpx.TimeoutException):
+                pass  # Container crashed -- restart below
+
+        return self._start_container()
+
+    def initialize(self) -> str:
+        """Initial setup: check for external service, then start container."""
+        ext = self._check_external_service()
+        if ext:
+            self._external_url = ext
+            return ext
+        return self._start_container()
+
+    def cleanup(self):
+        """Remove managed container."""
+        if self._container is not None:
+            try:
+                self._container.remove(force=True)
+            except Exception:
+                pass
 
 
 @pytest.fixture(scope="session")
-def lean_url(lean_container):
-    """Session-scoped LEAN URL (uses dynamic container per worker)."""
-    return lean_container
+def _lean_manager():
+    """Session-scoped container manager (handles restarts)."""
+    manager = _LeanContainerManager()
+    manager.initialize()
+    yield manager
+    manager.cleanup()
 
 
-@pytest.fixture(scope="session")
-def backtest_service(lean_url: str):
-    """Session-scoped BacktestService (reused across tests).
-    
-    Tests should provide their own MockDataService per test for isolation.
+@pytest.fixture
+def lean_url(_lean_manager: _LeanContainerManager):
+    """Per-test LEAN URL that auto-restarts the container if it crashed.
+
+    Each test checks container health before use. If the container died
+    (LEAN .NET runtime memory accumulation), it transparently restarts.
     """
-    from src.service.backtest_service import BacktestService
-    
-    return BacktestService(
-        data_service=None,  # Tests provide their own MockDataService
-        backtest_url=lean_url,
-    )
+    return _lean_manager.get_url()

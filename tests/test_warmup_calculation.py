@@ -9,8 +9,6 @@ for indicator warmup, causing 0 trades when indicators couldn't initialize.
 
 from datetime import timedelta
 
-import pytest
-
 from src.service.backtest_service import _calculate_warmup_bars, _resolution_to_timedelta
 
 

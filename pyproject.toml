@@ -43,19 +43,27 @@ packages = ["src"]
 dev = [
     "pytest>=9.0.1",
     "pytest-cov>=5.0.0",
+    "pytest-timeout>=2.3.0",
     "pytest-xdist>=3.5.0",  # Parallel test execution
+    "docker>=7.0.0",  # For dynamic container management in tests
     "ruff>=0.6.0",
     "vibe-trade-lean",  # For LEAN e2e test utilities
+    "vibe-trade-mcp",
 ]
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+# Per-test timeout for e2e (avoid suite appearing stuck at 55%+)
+timeout = 120
 markers = [
     "e2e: marks tests as end-to-end (requires LEAN container, deselect with '-m \"not e2e\"')",
     "smoke: marks representative smoke tests for quick validation (~15 tests, ~2 min)",
+    "fast: marks fast tests (<5s each, simple conditions, no complex indicators)",
+    "slow: marks slow tests (>10s each, long backtests, multiple cycles, complex patterns)",
 ]
 
 [tool.ruff]
@@ -106,3 +114,4 @@ fail_under = 60
 [tool.uv.sources]
 vibe-trade-shared = { path = "../vibe-trade-shared", editable = true }
 vibe-trade-lean = { path = "../vibe-trade-lean", editable = true }  # For test utilities
+vibe-trade-mcp = { path = "../vibe-trade-mcp" }
