@@ -96,6 +96,12 @@ class ActionBuilder:
         Raises:
             TranslationError: If sizing type is unknown
         """
+        # Defense in depth: schema should block "auto", but validate here too
+        if direction not in ("long", "short"):
+            raise TranslationError(
+                f"Unsupported direction '{direction}'. Use 'long' or 'short'. "
+                f"(direction='auto' requires runtime changes - see plan Milestone 4)"
+            )
         sign = 1.0 if direction == "long" else -1.0
 
         # Extract position policy if present

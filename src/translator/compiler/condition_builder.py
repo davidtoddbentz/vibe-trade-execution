@@ -70,6 +70,8 @@ from vibe_trade_shared.models.ir.indicators import (
     VWAPBands,
 )
 
+from src.translator.errors import TranslationError
+
 if TYPE_CHECKING:
     from src.translator.compiler.context import CompilationContext
 
@@ -613,7 +615,18 @@ def _compile_spread(spec: ConditionSpec, ctx: CompilationContext) -> Condition:
 
 
 def _compile_event(spec: ConditionSpec) -> Condition:
-    """Compile an event condition."""
+    """Compile an event condition.
+
+    NOTE: Event calendar is not yet wired in the runtime. EventWindowCondition
+    requires ctx.state["_event_calendar"] and ctx.state["_bar_count"] to be set,
+    but these are currently never written. Block until Milestone 2 is complete.
+    """
+    raise TranslationError(
+        "Event-based conditions are not yet supported. "
+        "The event calendar is not wired in the runtime (see plan Milestone 2). "
+        "Use time_filter conditions for time-based gating instead."
+    )
+    # Below code preserved for when event calendar is wired:
     ev = spec.event
     assert ev is not None
     if ev.trigger_type == "pre_event":

@@ -339,9 +339,17 @@ class TestCompileSpread:
 
 
 class TestCompileEvent:
-    """Test event condition compilation."""
+    """Test event condition compilation.
 
-    def test_pre_event(self):
+    NOTE: Event conditions are currently blocked because the event calendar
+    is not wired in the runtime. These tests verify the TranslationError
+    is raised with an appropriate message.
+    """
+
+    def test_event_condition_raises_translation_error(self):
+        """Event conditions should raise TranslationError until calendar is wired."""
+        from src.translator.errors import TranslationError
+
         spec = ConditionSpec(
             type="event",
             event=EventConditionSpec(
@@ -351,45 +359,31 @@ class TestCompileEvent:
             ),
         )
         ctx = _make_ctx()
-        result = compile_condition_spec(spec, ctx)
 
-        assert isinstance(result, EventWindowCondition)
-        assert result.event_types == ["earnings"]
-        assert result.pre_window_bars == 5
-        assert result.post_window_bars == 0
+        with pytest.raises(TranslationError) as exc_info:
+            compile_condition_spec(spec, ctx)
 
-    def test_post_event(self):
-        spec = ConditionSpec(
-            type="event",
-            event=EventConditionSpec(
-                event_kind="macro",
-                trigger_type="post_event",
-                bars_offset=10,
-            ),
-        )
-        ctx = _make_ctx()
-        result = compile_condition_spec(spec, ctx)
+        assert "not yet supported" in str(exc_info.value)
+        assert "event calendar" in str(exc_info.value).lower()
 
-        assert isinstance(result, EventWindowCondition)
-        assert result.pre_window_bars == 0
-        assert result.post_window_bars == 10
+    def test_all_event_trigger_types_blocked(self):
+        """All event trigger types should be blocked."""
+        from src.translator.errors import TranslationError
 
-    def test_in_window(self):
-        spec = ConditionSpec(
-            type="event",
-            event=EventConditionSpec(
-                event_kind="earnings",
-                trigger_type="in_window",
-                bars_offset=5,
-                window_bars=20,
-            ),
-        )
-        ctx = _make_ctx()
-        result = compile_condition_spec(spec, ctx)
+        for trigger_type in ["pre_event", "post_event", "in_window"]:
+            spec = ConditionSpec(
+                type="event",
+                event=EventConditionSpec(
+                    event_kind="earnings",
+                    trigger_type=trigger_type,
+                    bars_offset=5,
+                    window_bars=20 if trigger_type == "in_window" else None,
+                ),
+            )
+            ctx = _make_ctx()
 
-        assert isinstance(result, EventWindowCondition)
-        assert result.pre_window_bars == 5
-        assert result.post_window_bars == 20
+            with pytest.raises(TranslationError):
+                compile_condition_spec(spec, ctx)
 
 
 # =============================================================================
