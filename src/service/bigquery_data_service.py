@@ -75,7 +75,7 @@ class BigQueryDataService:
                 # Use emulator with anonymous credentials
                 from google.api_core.client_options import ClientOptions
                 from google.auth.credentials import AnonymousCredentials
-                
+
                 client_options = ClientOptions(api_endpoint=self.emulator_host)
                 self._client = bigquery.Client(
                     project=self.project_id,
@@ -203,8 +203,8 @@ class BigQueryDataService:
     ) -> list[OHLCVBar]:
         """Query emulator using raw HTTP to avoid timestamp parsing issues."""
         import json
-        import urllib.request
         import urllib.error
+        import urllib.request
 
         # Build simple query without parameters (emulator may not support all features)
         start_ts = start.strftime("%Y-%m-%d %H:%M:%S")

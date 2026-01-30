@@ -386,8 +386,13 @@ class BacktestService:
                 error=str(e),
             )
 
-    def _call_lean_endpoint(self, request: LEANBacktestRequest) -> LEANBacktestResponse:
+    def _call_lean_endpoint(
+        self, request: LEANBacktestRequest, _max_retries: int = 2
+    ) -> LEANBacktestResponse:
         """Call LEAN HTTP endpoint with new request format.
+
+        Retries on RemoteProtocolError ("Server disconnected") which occurs when
+        uvicorn closes a keep-alive connection between sequential requests.
 
         Args:
             request: LEANBacktestRequest with strategy_ir, data, and config
@@ -399,30 +404,44 @@ class BacktestService:
         if self.auth_token:
             headers["Authorization"] = f"Bearer {self.auth_token}"
 
-        try:
-            with httpx.Client(timeout=600.0) as client:  # 10 minute timeout
-                response = client.post(
-                    self.backtest_url,
-                    content=request.model_dump_json(),
-                    headers=headers,
-                )
-
-                if response.status_code != 200:
-                    return LEANBacktestResponse(
-                        status="error",
-                        error=f"HTTP {response.status_code}: {response.text}",
+        last_error: Exception | None = None
+        for attempt in range(_max_retries + 1):
+            try:
+                with httpx.Client(timeout=600.0) as client:  # 10 minute timeout
+                    response = client.post(
+                        self.backtest_url,
+                        content=request.model_dump_json(),
+                        headers=headers,
                     )
 
-                return LEANBacktestResponse.model_validate(response.json())
+                    if response.status_code != 200:
+                        return LEANBacktestResponse(
+                            status="error",
+                            error=f"HTTP {response.status_code}: {response.text}",
+                        )
 
-        except httpx.TimeoutException:
-            return LEANBacktestResponse(
-                status="error",
-                error="Backtest request timed out after 10 minutes",
-            )
-        except Exception as e:
-            return LEANBacktestResponse(
-                status="error",
-                error=f"Failed to call LEAN service: {e}",
-            )
+                    return LEANBacktestResponse.model_validate(response.json())
+
+            except httpx.TimeoutException:
+                return LEANBacktestResponse(
+                    status="error",
+                    error="Backtest request timed out after 10 minutes",
+                )
+            except httpx.RemoteProtocolError as e:
+                last_error = e
+                if attempt < _max_retries:
+                    logger.warning(
+                        f"LEAN connection reset (attempt {attempt + 1}/{_max_retries + 1}), retrying: {e}"
+                    )
+                    continue
+            except Exception as e:
+                return LEANBacktestResponse(
+                    status="error",
+                    error=f"Failed to call LEAN service: {e}",
+                )
+
+        return LEANBacktestResponse(
+            status="error",
+            error=f"Failed to call LEAN service after {_max_retries + 1} attempts: {last_error}",
+        )
 
