@@ -106,6 +106,49 @@ def _resolution_to_timedelta(resolution: str) -> timedelta:
         return timedelta(minutes=1)
 
 
+def _compute_benchmark(
+    bars: list, start_timestamp_ms: int
+) -> tuple[float | None, float | None, float | None]:
+    """Compute buy-and-hold return and max drawdown from OHLCV bars.
+
+    Only considers bars at or after start_timestamp_ms (the user's trading start date,
+    excluding warmup data).
+
+    Args:
+        bars: List of OHLCVBar objects (with .t timestamp in ms, .c close price)
+        start_timestamp_ms: Trading period start as milliseconds since epoch
+
+    Returns:
+        Tuple of (benchmark_return, benchmark_max_drawdown, alpha_placeholder)
+        where alpha_placeholder is None (caller computes alpha from strategy return).
+        Returns (None, None, None) if insufficient data.
+    """
+    # Filter to trading period only (exclude warmup bars)
+    trading_bars = [b for b in bars if b.t >= start_timestamp_ms]
+
+    if not trading_bars or len(trading_bars) < 2:
+        return None, None, None
+
+    first_close = trading_bars[0].c
+    if first_close == 0:
+        return None, None, None
+
+    last_close = trading_bars[-1].c
+    benchmark_return = (last_close - first_close) / first_close
+
+    # Compute max drawdown
+    peak = first_close
+    max_dd = 0.0
+    for bar in trading_bars:
+        if bar.c > peak:
+            peak = bar.c
+        dd = (bar.c - peak) / peak  # Negative value
+        if dd < max_dd:
+            max_dd = dd
+
+    return benchmark_return, max_dd, None
+
+
 class BacktestService:
     """Service for running strategy backtests via HTTP endpoint.
 
@@ -308,6 +351,18 @@ class BacktestService:
                 "average_loss": 0,  # Would need to calculate
             } if summary else None
 
+            # Compute buy-and-hold benchmark from OHLCV data
+            if statistics is not None and bars:
+                start_ts_ms = int(start_datetime.timestamp() * 1000)
+                bench_return, bench_dd, _ = _compute_benchmark(bars, start_ts_ms)
+                statistics["benchmark_return"] = bench_return
+                statistics["benchmark_max_drawdown"] = bench_dd
+                if bench_return is not None:
+                    strategy_return = statistics.get("total_return", 0) or 0
+                    statistics["alpha"] = strategy_return - bench_return
+                else:
+                    statistics["alpha"] = None
+
             # Transform equity curve to EquityPoint format expected by UI
             equity_curve_points = []
             if response.equity_curve and len(response.equity_curve) > 0:
@@ -444,4 +499,3 @@ class BacktestService:
             status="error",
             error=f"Failed to call LEAN service after {_max_retries + 1} attempts: {last_error}",
         )
-
