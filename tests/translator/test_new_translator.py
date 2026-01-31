@@ -720,3 +720,367 @@ class TestOverlayFieldRejection:
         translator = IRTranslator(strategy, cards)
         with pytest.raises(TranslationError, match="Invalid slots"):
             translator.translate()
+
+
+class TestEntryRiskAutoExitGeneration:
+    """Tests for auto-generating exit rules from entry risk specifications.
+
+    When an entry card has a 'risk' field with sl_pct/tp_pct/time_stop_bars,
+    the translator should automatically generate corresponding exit rules.
+    This fixes the bug where risk params were silently ignored.
+    """
+
+    def test_entry_risk_generates_exit_rules(self):
+        """Entry with risk spec auto-generates exit rules for TP/SL."""
+        strategy = Strategy(
+            id="test_risk",
+            name="Test Risk Auto-Exit",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                Attachment(card_id="entry", role="entry", enabled=True, overrides={})
+            ],
+        )
+        cards = {
+            "entry": Card(
+                id="entry",
+                type="entry.rule_trigger",
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                slots={
+                    "context": {"tf": "4h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
+                        },
+                    },
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
+                    "risk": {"sl_pct": 5, "tp_pct": 10},  # <-- This should generate exits!
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        # Should have auto-generated exit rule(s)
+        assert len(ir.exits) >= 1, "Expected at least 1 auto-generated exit from risk spec"
+
+        # The exit should be named with auto_risk prefix
+        auto_exits = [e for e in ir.exits if "auto_risk" in e.id]
+        assert len(auto_exits) == 1, f"Expected 1 auto_risk_exit, got {len(auto_exits)}"
+
+        # The exit condition should be an AnyOfCondition (TP OR SL)
+        exit_condition = auto_exits[0].condition
+        assert exit_condition is not None
+
+    def test_entry_with_tp_only_generates_exit(self):
+        """Entry with only tp_pct generates exit rule."""
+        strategy = Strategy(
+            id="test_tp",
+            name="Test TP Only",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                Attachment(card_id="entry", role="entry", enabled=True, overrides={})
+            ],
+        )
+        cards = {
+            "entry": Card(
+                id="entry",
+                type="entry.rule_trigger",
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
+                        },
+                    },
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
+                    "risk": {"tp_pct": 15},  # Only TP, no SL
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        auto_exits = [e for e in ir.exits if "auto_risk" in e.id]
+        assert len(auto_exits) == 1
+
+    def test_entry_with_sl_only_generates_exit(self):
+        """Entry with only sl_pct generates exit rule."""
+        strategy = Strategy(
+            id="test_sl",
+            name="Test SL Only",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                Attachment(card_id="entry", role="entry", enabled=True, overrides={})
+            ],
+        )
+        cards = {
+            "entry": Card(
+                id="entry",
+                type="entry.rule_trigger",
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
+                        },
+                    },
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
+                    "risk": {"sl_pct": 5},  # Only SL, no TP
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        auto_exits = [e for e in ir.exits if "auto_risk" in e.id]
+        assert len(auto_exits) == 1
+
+    def test_entry_with_time_stop_generates_exit(self):
+        """Entry with time_stop_bars generates exit rule."""
+        strategy = Strategy(
+            id="test_time",
+            name="Test Time Stop",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                Attachment(card_id="entry", role="entry", enabled=True, overrides={})
+            ],
+        )
+        cards = {
+            "entry": Card(
+                id="entry",
+                type="entry.rule_trigger",
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
+                        },
+                    },
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
+                    "risk": {"time_stop_bars": 48},  # Exit after 48 bars
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        auto_exits = [e for e in ir.exits if "auto_risk" in e.id]
+        assert len(auto_exits) == 1
+
+    def test_entry_without_risk_no_auto_exit(self):
+        """Entry without risk spec should not generate auto-exits."""
+        strategy = Strategy(
+            id="test_no_risk",
+            name="Test No Risk",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                Attachment(card_id="entry", role="entry", enabled=True, overrides={})
+            ],
+        )
+        cards = {
+            "entry": Card(
+                id="entry",
+                type="entry.rule_trigger",
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
+                        },
+                    },
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
+                    # No risk field!
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        # Should have no auto-generated exits
+        auto_exits = [e for e in ir.exits if "auto_risk" in e.id]
+        assert len(auto_exits) == 0
+
+    def test_entry_with_empty_risk_no_auto_exit(self):
+        """Entry with empty risk spec should not generate auto-exits."""
+        strategy = Strategy(
+            id="test_empty_risk",
+            name="Test Empty Risk",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                Attachment(card_id="entry", role="entry", enabled=True, overrides={})
+            ],
+        )
+        cards = {
+            "entry": Card(
+                id="entry",
+                type="entry.rule_trigger",
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
+                        },
+                    },
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
+                    "risk": {},  # Empty risk dict
+                },
+            )
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        # Should have no auto-generated exits
+        auto_exits = [e for e in ir.exits if "auto_risk" in e.id]
+        assert len(auto_exits) == 0
+
+    def test_explicit_exit_plus_auto_risk_exit(self):
+        """Entry risk exits are added alongside explicit exit cards."""
+        strategy = Strategy(
+            id="test_both",
+            name="Test Both Exits",
+            universe=["BTC-USD"],
+            created_at=NOW,
+            updated_at=NOW,
+            attachments=[
+                Attachment(card_id="entry", role="entry", enabled=True, overrides={}),
+                Attachment(card_id="exit", role="exit", enabled=True, overrides={}),
+            ],
+        )
+        cards = {
+            "entry": Card(
+                id="entry",
+                type="entry.rule_trigger",
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": ">",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
+                        },
+                    },
+                    "action": {"direction": "long", "position_policy": {"mode": "single"}},
+                    "risk": {"sl_pct": 5},  # Auto-generate SL exit
+                },
+            ),
+            "exit": Card(
+                id="exit",
+                type="exit.rule_trigger",
+                created_at=NOW,
+                updated_at=NOW,
+                schema_etag="v1",
+                slots={
+                    "context": {"tf": "1h", "symbol": "BTC-USD"},
+                    "event": {
+                        "condition": {
+                            "type": "regime",
+                            "regime": {
+                                "metric": "trend_ma_relation",
+                                "op": "<",
+                                "value": 0,
+                                "ma_fast": 20,
+                                "ma_slow": 50,
+                            },
+                        },
+                    },
+                    "action": {"mode": "close"},
+                },
+            ),
+        }
+
+        translator = IRTranslator(strategy, cards)
+        ir = translator.translate()
+
+        # Should have both explicit and auto-generated exits
+        assert len(ir.exits) >= 2
+
+        explicit_exits = [e for e in ir.exits if "exit_" in e.id and "auto" not in e.id]
+        auto_exits = [e for e in ir.exits if "auto_risk" in e.id]
+
+        assert len(explicit_exits) >= 1, "Should have explicit exit"
+        assert len(auto_exits) == 1, "Should have auto-generated risk exit"

@@ -28,9 +28,11 @@ from typing import Any
 
 from vibe_trade_shared.models import Card, Strategy
 from vibe_trade_shared.models.archetypes import parse_archetype
+from vibe_trade_shared.models.archetypes.primitives import FixedTargetsSpec
 from vibe_trade_shared.models.ir import Condition
 
 from .builders import ActionBuilder
+from .compiler.condition_builder import _compile_fixed_targets
 from .compiler import (
     CompilationContext,
     build_condition,
@@ -116,6 +118,9 @@ class IRTranslator:
         gates: list[GateRule] = []
         overlays: list[OverlayRule] = []
 
+        # Track auto-generated risk exits from entry cards
+        auto_risk_exits: list[ExitRule] = []
+
         # Process attachments by role
         for attachment in self.strategy.attachments:
             if not attachment.enabled:
@@ -132,6 +137,12 @@ class IRTranslator:
                 translated = self._build_entry(card.type, slots)
                 if translated:
                     entry = translated
+
+                # Auto-generate exit rules from entry card's risk specification
+                # This ensures sl_pct/tp_pct on entries actually work
+                risk_exits = self._build_risk_exits_from_entry(slots)
+                auto_risk_exits.extend(risk_exits)
+
             elif attachment.role == "exit":
                 translated = self._build_exit(card.type, slots)
                 if translated:
@@ -144,6 +155,10 @@ class IRTranslator:
                 translated = self._build_overlay(card.type, slots)
                 if translated:
                     overlays.append(translated)
+
+        # Append auto-generated risk exits to explicit exits
+        # They come after explicit exits so user-defined exits have priority
+        exits.extend(auto_risk_exits)
 
         # Determine resolution from first entry card's context
         resolution = self._determine_resolution()
@@ -328,6 +343,75 @@ class IRTranslator:
             scale_size_frac=scale_size_frac,
             target_roles=target_roles,
         )
+
+    def _build_risk_exits_from_entry(self, slots: dict[str, Any]) -> list[ExitRule]:
+        """Auto-generate exit rules from entry card's risk specification.
+
+        If the entry card has risk parameters (sl_pct, tp_pct, time_stop_bars),
+        automatically create corresponding exit rules. This ensures user
+        expectation that risk = protection is met.
+
+        Args:
+            slots: The entry card's slot values
+
+        Returns:
+            List of ExitRule objects (may be empty if no risk params set)
+        """
+        risk_spec = slots.get("risk")
+        if not risk_spec:
+            return []
+
+        # Handle both dict and PositionRiskSpec-like objects
+        if hasattr(risk_spec, "model_dump"):
+            risk_spec = risk_spec.model_dump()
+
+        # Extract risk parameters (percentage-based)
+        tp_pct = risk_spec.get("tp_pct")
+        sl_pct = risk_spec.get("sl_pct")
+        time_stop_bars = risk_spec.get("time_stop_bars")
+
+        # TODO: Future enhancement - handle tp_rr and sl_atr
+        # These require additional context (entry price for RR, ATR indicator for ATR-based)
+        # For now, log a warning if they're used
+        if risk_spec.get("tp_rr") is not None or risk_spec.get("sl_atr") is not None:
+            logger.warning(
+                "Entry risk spec contains tp_rr or sl_atr which are not yet auto-translated. "
+                "Use exit.fixed_targets or exit.trailing_stop cards for these features."
+            )
+
+        # Check if any percentage-based params are set
+        if tp_pct is None and sl_pct is None and time_stop_bars is None:
+            return []
+
+        # Build FixedTargetsSpec from risk parameters
+        try:
+            spec = FixedTargetsSpec(
+                tp_pct=tp_pct,
+                sl_pct=sl_pct,
+                time_stop_bars=time_stop_bars,
+            )
+        except ValueError as e:
+            logger.warning(f"Invalid risk spec, skipping auto-exit generation: {e}")
+            return []
+
+        # Compile to condition using existing infrastructure
+        condition = _compile_fixed_targets(spec)
+
+        # Build exit rule
+        self._exit_counter += 1
+        exit_rule = ExitRule(
+            id=f"auto_risk_exit_{self._exit_counter}",
+            condition=condition,
+            action=ActionBuilder.build_exit_action({"mode": "close"}),
+            priority=self._exit_counter,
+        )
+
+        logger.info(
+            f"Auto-generated exit rule from entry risk spec: "
+            f"tp={tp_pct}%, sl={sl_pct}%, time_stop={time_stop_bars}"
+        )
+
+        return [exit_rule]
 
     # =========================================================================
     # Core Translation
