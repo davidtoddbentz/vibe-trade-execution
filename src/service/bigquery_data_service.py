@@ -28,7 +28,7 @@ class BigQueryDataService:
         "1min": "candles_parsed",
         "minute": "candles_parsed",
         "5m": "candles_5m",  # Aggregation view from 1m
-        "15m": "candles_5m",  # Use 5m and filter client-side for now
+        "15m": "candles_15m",  # Proper 15m aggregation view
         "1h": "candles_1h",  # Aggregation view from 1m
         "hour": "candles_1h",
         "4h": "candles_4h",  # Aggregation view from 1h
