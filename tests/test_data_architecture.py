@@ -9,6 +9,7 @@ These tests require a connection to BigQuery (production or emulator).
 """
 
 from abc import ABC, abstractmethod
+import os
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -21,6 +22,8 @@ from src.service.bigquery_data_service import BigQueryDataService
 # Skip all tests in this module if BQ is not available
 def is_bigquery_available() -> bool:
     """Check if BigQuery is accessible."""
+    if os.getenv("SKIP_BIGQUERY_TESTS") == "1":
+        return False
     try:
         service = BigQueryDataService(project_id="vibe-trade-475704")
         # Try a simple query

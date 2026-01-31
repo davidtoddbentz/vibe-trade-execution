@@ -418,6 +418,13 @@ class BacktestService:
                 "statistics": statistics,
                 "equity_curve": equity_curve_points,
             }
+            if response.ohlcv_bars:
+                results["ohlcv_bars"] = [
+                    bar.model_dump() if hasattr(bar, "model_dump") else bar
+                    for bar in response.ohlcv_bars
+                ]
+            if response.indicators:
+                results["indicators"] = response.indicators
 
             return BacktestResult(
                 status="success",

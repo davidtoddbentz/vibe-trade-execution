@@ -414,6 +414,10 @@ async def get_backtest_status(backtest_id: str) -> BacktestResponseModel:
                     "statistics": backtest.results.statistics.model_dump(),
                     "equity_curve": backtest.results.equity_curve,
                 }
+                if getattr(backtest.results, "ohlcv_bars", None):
+                    results["ohlcv_bars"] = backtest.results.ohlcv_bars
+                if getattr(backtest.results, "indicators", None):
+                    results["indicators"] = backtest.results.indicators
 
         return BacktestResponseModel(
             backtest_id=backtest.id,

@@ -361,19 +361,24 @@ class IRTranslator:
         if not risk_spec:
             return []
 
-        # Handle both dict and PositionRiskSpec-like objects
-        if hasattr(risk_spec, "model_dump"):
-            risk_spec = risk_spec.model_dump()
-
-        # Extract risk parameters (percentage-based)
-        tp_pct = risk_spec.get("tp_pct")
-        sl_pct = risk_spec.get("sl_pct")
-        time_stop_bars = risk_spec.get("time_stop_bars")
+        # Extract risk parameters (percentage-based) from dict or typed object
+        if isinstance(risk_spec, dict):
+            tp_pct = risk_spec.get("tp_pct")
+            sl_pct = risk_spec.get("sl_pct")
+            time_stop_bars = risk_spec.get("time_stop_bars")
+            tp_rr = risk_spec.get("tp_rr")
+            sl_atr = risk_spec.get("sl_atr")
+        else:
+            tp_pct = getattr(risk_spec, "tp_pct", None)
+            sl_pct = getattr(risk_spec, "sl_pct", None)
+            time_stop_bars = getattr(risk_spec, "time_stop_bars", None)
+            tp_rr = getattr(risk_spec, "tp_rr", None)
+            sl_atr = getattr(risk_spec, "sl_atr", None)
 
         # TODO: Future enhancement - handle tp_rr and sl_atr
         # These require additional context (entry price for RR, ATR indicator for ATR-based)
         # For now, log a warning if they're used
-        if risk_spec.get("tp_rr") is not None or risk_spec.get("sl_atr") is not None:
+        if tp_rr is not None or sl_atr is not None:
             logger.warning(
                 "Entry risk spec contains tp_rr or sl_atr which are not yet auto-translated. "
                 "Use exit.fixed_targets or exit.trailing_stop cards for these features."

@@ -5,7 +5,7 @@ Execution sends LEANBacktestRequest, LEAN returns LEANBacktestResponse.
 """
 
 from datetime import date, datetime
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 from vibe_trade_shared.models.data import OHLCVBar
@@ -126,4 +126,19 @@ class LEANBacktestResponse(BaseModel):
     summary: BacktestSummary | None = None
     # Support both formats: list[EquityPoint] (full data) or list[float] (legacy)
     equity_curve: list[EquityPoint] | list[float] | None = None
+    ohlcv_bars: list[OHLCVBar] | list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "OHLCV bars used in the backtest, for candlestick chart visualization. "
+            "Supports canonical OHLCVBar or time/open/high/low/close/volume dicts."
+        ),
+    )
+    indicators: dict[str, list[dict[str, Any]]] | None = Field(
+        default=None,
+        description=(
+            "Indicator time-series data keyed by indicator name. Each value is a list of points "
+            "with at least a time and value field, plus optional additional fields (e.g., "
+            "Bollinger Bands upper/middle/lower)."
+        ),
+    )
     error: str | None = None

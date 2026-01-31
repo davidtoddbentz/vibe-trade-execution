@@ -1157,6 +1157,7 @@ class TestBreakoutTrendfollowTranslation:
                     "context": {"tf": "4h", "symbol": "BTC-USD"},
                     "event": {
                         "breakout": {"lookback_bars": 50, "buffer_bps": 10},
+                        "trend_filter": {"fast": 20, "slow": 50, "op": ">"},
                     },
                     "action": {
                         "direction": "long",
