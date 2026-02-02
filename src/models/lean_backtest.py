@@ -104,15 +104,117 @@ class EquityPoint(BaseModel):
 
 
 class BacktestSummary(BaseModel):
-    """Summary metrics from backtest."""
+    """Summary metrics from backtest.
 
+    Includes both custom calculations and LEAN's native PortfolioStatistics.
+    All LEAN statistics are optional for backward compatibility.
+    """
+
+    # Basic metrics (required, from custom calculations)
     total_trades: int
     winning_trades: int
     losing_trades: int
     total_pnl: float = Field(..., description="Total P&L in quote currency")
     total_pnl_pct: float = Field(..., description="Total P&L as percentage")
     max_drawdown_pct: float = Field(default=0.0, description="Maximum drawdown percentage")
-    sharpe_ratio: float | None = None
+
+    # LEAN PortfolioStatistics (all optional)
+
+    # Risk-Adjusted Returns
+    sharpe_ratio: float | None = Field(
+        default=None,
+        description="Sharpe ratio based on the strategy's excess returns",
+    )
+    sortino_ratio: float | None = Field(
+        default=None,
+        description="Sortino ratio based on downside deviation",
+    )
+    probabilistic_sharpe_ratio: float | None = Field(
+        default=None,
+        description="Probabilistic Sharpe ratio",
+    )
+    information_ratio: float | None = Field(
+        default=None,
+        description="Information ratio relative to the benchmark",
+    )
+    treynor_ratio: float | None = Field(
+        default=None,
+        description="Treynor ratio based on systematic risk",
+    )
+
+    # Performance Metrics
+    compounding_annual_return: float | None = Field(
+        default=None,
+        description="Compounded annual return (CAGR)",
+    )
+    total_net_profit: float | None = Field(
+        default=None,
+        description="Total net profit over the backtest period",
+    )
+    start_equity: float | None = Field(default=None, description="Starting equity value")
+    end_equity: float | None = Field(default=None, description="Ending equity value")
+
+    # Risk Metrics
+    drawdown: float | None = Field(
+        default=None,
+        description="Maximum drawdown as a decimal fraction",
+    )
+    annual_standard_deviation: float | None = Field(
+        default=None,
+        description="Annualized standard deviation of returns",
+    )
+    annual_variance: float | None = Field(
+        default=None,
+        description="Annualized variance of returns",
+    )
+    tracking_error: float | None = Field(
+        default=None,
+        description="Tracking error versus benchmark",
+    )
+    value_at_risk_99: float | None = Field(
+        default=None,
+        description="Value at risk at 99% confidence",
+    )
+    value_at_risk_95: float | None = Field(
+        default=None,
+        description="Value at risk at 95% confidence",
+    )
+
+    # Market Correlation
+    alpha: float | None = Field(
+        default=None,
+        description="Alpha relative to the benchmark",
+    )
+    beta: float | None = Field(
+        default=None,
+        description="Beta relative to the benchmark",
+    )
+
+    # Trade Statistics (LEAN native)
+    win_rate: float | None = Field(default=None, description="Percentage of winning trades")
+    loss_rate: float | None = Field(default=None, description="Percentage of losing trades")
+    average_win_rate: float | None = Field(
+        default=None,
+        description="Average return of winning trades",
+    )
+    average_loss_rate: float | None = Field(
+        default=None,
+        description="Average return of losing trades",
+    )
+    profit_loss_ratio: float | None = Field(
+        default=None,
+        description="Ratio of average winning trade return to average losing trade return",
+    )
+    expectancy: float | None = Field(
+        default=None,
+        description="Expected return per trade based on win/loss rates and averages",
+    )
+
+    # Activity Metrics
+    portfolio_turnover: float | None = Field(
+        default=None,
+        description="Portfolio turnover over the backtest period",
+    )
 
 
 class LEANBacktestResponse(BaseModel):
