@@ -371,16 +371,14 @@ class BacktestService:
                 "beta": summary.beta if summary and summary.beta is not None else None,
             } if summary else None
 
-            # Compute buy-and-hold benchmark from OHLCV data
-            # Only overwrite LEAN's alpha if we successfully calculate benchmark
+            # Compute buy-and-hold benchmark from OHLCV data for UI display
+            # Note: LEAN already calculates alpha/beta against the trading symbol benchmark,
+            # so we don't override those. We just add benchmark metrics for comparison.
             if statistics is not None and bars:
                 start_ts_ms = int(start_datetime.timestamp() * 1000)
                 bench_return, bench_dd, _ = _compute_benchmark(bars, start_ts_ms)
                 statistics["benchmark_return"] = bench_return
                 statistics["benchmark_max_drawdown"] = bench_dd
-                if bench_return is not None:
-                    strategy_return = statistics.get("total_return", 0) or 0
-                    statistics["alpha"] = strategy_return - bench_return
 
             # Transform equity curve to EquityPoint format expected by UI
             equity_curve_points = []
