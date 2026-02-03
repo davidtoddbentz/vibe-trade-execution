@@ -336,22 +336,38 @@ class BacktestService:
                 })
 
             # Transform statistics to UI format
+            # Map all statistics from BacktestSummary to match BacktestStatistics schema
             win_rate = (summary.winning_trades / summary.total_trades) if summary and summary.total_trades > 0 else 0
             statistics = {
+                # Core performance metrics
                 "total_return": summary.total_pnl_pct / 100 if summary else 0,  # UI expects decimal
-                "annual_return": 0,  # Would need more data to calculate
+                "annual_return": summary.compounding_annual_return / 100 if summary and summary.compounding_annual_return is not None else 0,
+                "net_profit": summary.total_pnl if summary else 0,
+
+                # Risk-adjusted returns
                 "sharpe_ratio": summary.sharpe_ratio if summary else None,
+                "sortino_ratio": summary.sortino_ratio if summary and summary.sortino_ratio is not None else None,
+                "information_ratio": summary.information_ratio if summary and summary.information_ratio is not None else None,
+                "treynor_ratio": summary.treynor_ratio if summary and summary.treynor_ratio is not None else None,
+
+                # Risk metrics
                 "max_drawdown": summary.max_drawdown_pct / 100 if summary else 0,  # UI expects decimal
+
+                # Trade statistics
                 "total_trades": summary.total_trades if summary else 0,
                 "winning_trades": summary.winning_trades if summary else 0,
                 "losing_trades": summary.losing_trades if summary else 0,
                 "win_rate": win_rate,
-                "net_profit": summary.total_pnl if summary else 0,
-                "average_win": 0,  # Would need to calculate
-                "average_loss": 0,  # Would need to calculate
+                "average_win": summary.average_win_rate / 100 if summary and summary.average_win_rate is not None else 0,
+                "average_loss": summary.average_loss_rate / 100 if summary and summary.average_loss_rate is not None else 0,
+
+                # Market correlation (will be overwritten by benchmark calculation below if available)
+                "alpha": summary.alpha if summary and summary.alpha is not None else None,
+                "beta": summary.beta if summary and summary.beta is not None else None,
             } if summary else None
 
             # Compute buy-and-hold benchmark from OHLCV data
+            # Only overwrite LEAN's alpha if we successfully calculate benchmark
             if statistics is not None and bars:
                 start_ts_ms = int(start_datetime.timestamp() * 1000)
                 bench_return, bench_dd, _ = _compute_benchmark(bars, start_ts_ms)
@@ -360,8 +376,6 @@ class BacktestService:
                 if bench_return is not None:
                     strategy_return = statistics.get("total_return", 0) or 0
                     statistics["alpha"] = strategy_return - bench_return
-                else:
-                    statistics["alpha"] = None
 
             # Transform equity curve to EquityPoint format expected by UI
             equity_curve_points = []
