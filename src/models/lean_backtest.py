@@ -52,7 +52,7 @@ class BacktestConfig(BaseModel):
         "If None, uses start_date. Used to prevent trades during warmup period.",
     )
     # Execution params
-    symbol: str = Field(default="BTC-USD", description="Trading symbol")
+    symbol: str = Field(..., description="Trading symbol (e.g., 'BTC-USD')")
     resolution: str = Field(default="1h", description="Bar resolution ('1m', '1h', '1d')")
     fee_pct: float = Field(default=0.0, description="Fee as percentage (0.1 = 0.1%)")
     slippage_pct: float = Field(default=0.0, description="Slippage as percentage (0.05 = 0.05%)")

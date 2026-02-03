@@ -52,7 +52,7 @@ def _extract_symbol_from_cards(cards: dict[str, Any]) -> str:
     """Extract symbol from entry card's context.
 
     Looks for an entry card and extracts the symbol from its context slot.
-    Falls back to BTC-USD if no symbol found.
+    Raises ValueError if no symbol found - symbol is required.
     """
     for card in cards.values():
         card_type = card.type if hasattr(card, "type") else card.get("type", "")
@@ -61,7 +61,7 @@ def _extract_symbol_from_cards(cards: dict[str, Any]) -> str:
             context = slots.get("context", {})
             if symbol := context.get("symbol"):
                 return symbol
-    return "BTC-USD"  # Default fallback
+    raise ValueError("No symbol found in entry card context - symbol is required")
 
 
 def _extract_timeframe_from_cards(cards: dict[str, Any]) -> str:
