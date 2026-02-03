@@ -352,14 +352,19 @@ class BacktestService:
 
                 # Risk metrics
                 "max_drawdown": summary.max_drawdown_pct / 100 if summary else 0,  # UI expects decimal
+                "annual_standard_deviation": summary.annual_standard_deviation / 100 if summary and summary.annual_standard_deviation is not None else None,
+                "value_at_risk_95": summary.value_at_risk_95 if summary and summary.value_at_risk_95 is not None else None,
 
                 # Trade statistics
                 "total_trades": summary.total_trades if summary else 0,
                 "winning_trades": summary.winning_trades if summary else 0,
                 "losing_trades": summary.losing_trades if summary else 0,
                 "win_rate": win_rate,
+                "loss_rate": summary.loss_rate / 100 if summary and summary.loss_rate is not None else None,
                 "average_win": summary.average_win_rate / 100 if summary and summary.average_win_rate is not None else 0,
                 "average_loss": summary.average_loss_rate / 100 if summary and summary.average_loss_rate is not None else 0,
+                "profit_loss_ratio": summary.profit_loss_ratio if summary and summary.profit_loss_ratio is not None else None,
+                "expectancy": summary.expectancy if summary and summary.expectancy is not None else None,
 
                 # Market correlation (will be overwritten by benchmark calculation below if available)
                 "alpha": summary.alpha if summary and summary.alpha is not None else None,
