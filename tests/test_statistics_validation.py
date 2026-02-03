@@ -158,32 +158,33 @@ def calculate_sharpe_ratio(
     periods_per_year: int | None = None,
 ) -> float:
     """Calculate Sharpe ratio from a list of returns.
-    
-    Matches LEAN's Statistics.SharpeRatio(listPerformance, riskFreeRate, tradingDaysPerYear):
-      - annual_performance = (mean_daily + 1) ** periods_per_year - 1
-      - annual_std = sqrt(variance * periods_per_year)
-      - sharpe = (annual_performance - risk_free_rate) / annual_std
+
+    Standard formula:
+      - sharpe = (mean_return - risk_free_rate) / std_dev
+      - If periods_per_year provided, annualize: sharpe * sqrt(periods_per_year)
+
+    This is the correct textbook formula. Do NOT compound returns for short periods.
     """
     if len(returns) < 2:
         return 0.0
-    
+
     mean_return = sum(returns) / len(returns)
-    # LEAN uses MathNet.Numerics.Statistics.Variance (sample variance, N-1)
+    # Sample variance (N-1)
     variance = sum((r - mean_return) ** 2 for r in returns) / (len(returns) - 1)
     if variance <= 0:
         return 0.0
     std_dev = math.sqrt(variance)
 
-    if periods_per_year:
-        annual_performance = (mean_return + 1) ** periods_per_year - 1
-        annual_std = math.sqrt(variance * periods_per_year)
-        if annual_std == 0:
-            return 0.0
-        return (annual_performance - risk_free_rate) / annual_std
-
     if std_dev == 0:
         return 0.0
-    return (mean_return - risk_free_rate) / std_dev
+
+    sharpe = (mean_return - risk_free_rate) / std_dev
+
+    # Annualize if requested
+    if periods_per_year:
+        sharpe *= math.sqrt(periods_per_year)
+
+    return sharpe
 
 
 def calculate_sortino_ratio(
@@ -192,21 +193,23 @@ def calculate_sortino_ratio(
     periods_per_year: int | None = None,
 ) -> float:
     """Calculate Sortino ratio (only considers downside volatility).
-    
-    Matches LEAN's Sortino ratio calculation using annualized performance and
-    annualized downside deviation.
+
+    Standard formula:
+      - sortino = (mean_return - risk_free_rate) / downside_deviation
+      - Downside deviation uses only negative returns
+      - If periods_per_year provided, annualize: sortino * sqrt(periods_per_year)
     """
     if len(returns) < 2:
         return 0.0
-    
+
     mean_return = sum(returns) / len(returns)
-    
+
     # Only consider negative returns for downside deviation
     downside_returns = [r for r in returns if r < 0]
     if not downside_returns:
         return float('inf')  # No downside risk
-    
-    # LEAN uses sample variance for downside returns
+
+    # Calculate downside deviation (standard deviation of negative returns)
     if len(downside_returns) < 2:
         return 0.0
     downside_mean = sum(downside_returns) / len(downside_returns)
@@ -217,14 +220,13 @@ def calculate_sortino_ratio(
         return 0.0
     downside_deviation = math.sqrt(downside_variance)
 
-    if periods_per_year:
-        annual_performance = (mean_return + 1) ** periods_per_year - 1
-        annual_downside = math.sqrt(downside_variance * periods_per_year)
-        if annual_downside == 0:
-            return 0.0
-        return (annual_performance - risk_free_rate) / annual_downside
+    sortino = (mean_return - risk_free_rate) / downside_deviation
 
-    return (mean_return - risk_free_rate) / downside_deviation
+    # Annualize if requested
+    if periods_per_year:
+        sortino *= math.sqrt(periods_per_year)
+
+    return sortino
 
 
 def calculate_win_rate(trades: list) -> float:
@@ -322,7 +324,11 @@ def calculate_information_ratio(
     benchmark_returns: list[float],
     periods_per_year: int,
 ) -> float:
-    """Calculate Information ratio matching LEAN's annualized method."""
+    """Calculate Information ratio using standard formula.
+
+    Information Ratio = mean(active_return) / std_dev(active_return) * sqrt(periods_per_year)
+    where active_return = strategy_return - benchmark_return
+    """
     if len(returns) < 2 or len(benchmark_returns) < 2:
         return 0.0
     paired_length = min(len(returns), len(benchmark_returns))
@@ -331,28 +337,33 @@ def calculate_information_ratio(
     active_returns = [r - b for r, b in zip(algo_returns, bench_returns)]
     if len(active_returns) < 2:
         return 0.0
-    mean_algo = sum(algo_returns) / len(algo_returns)
-    mean_bench = sum(bench_returns) / len(bench_returns)
-    annual_algo = (mean_algo + 1) ** periods_per_year - 1
-    annual_bench = (mean_bench + 1) ** periods_per_year - 1
+
     mean_active = sum(active_returns) / len(active_returns)
     variance = sum((r - mean_active) ** 2 for r in active_returns) / (len(active_returns) - 1)
-    tracking_error = math.sqrt(variance * periods_per_year)
+    if variance <= 0:
+        return 0.0
+    tracking_error = math.sqrt(variance)
+
     if tracking_error == 0:
         return 0.0
-    return (annual_algo - annual_bench) / tracking_error
+
+    info_ratio = mean_active / tracking_error
+    # Annualize
+    return info_ratio * math.sqrt(periods_per_year)
 
 
 def _sharpe_components(returns: list[float], periods_per_year: int) -> dict[str, float]:
     mean_return = sum(returns) / len(returns)
     variance = sum((r - mean_return) ** 2 for r in returns) / (len(returns) - 1)
-    annual_performance = (mean_return + 1) ** periods_per_year - 1
-    annual_std = math.sqrt(variance * periods_per_year)
+    std_dev = math.sqrt(variance) if variance > 0 else 0.0
+    sharpe_base = (mean_return / std_dev) if std_dev > 0 else 0.0
+    sharpe_annualized = sharpe_base * math.sqrt(periods_per_year)
     return {
         "mean_return": mean_return,
         "variance": variance,
-        "annual_performance": annual_performance,
-        "annual_std": annual_std,
+        "std_dev": std_dev,
+        "sharpe_base": sharpe_base,
+        "sharpe_annualized": sharpe_annualized,
     }
 
 
@@ -433,13 +444,11 @@ class TestStatisticsValidation:
             print(
                 "Sharpe Debug (test_sharpe_ratio_matches_calculation): "
                 f"equity_len={len(equity_values)}, "
-                f"equity_sample={equity_values[:3]}...{equity_values[-3:]}, "
                 f"returns_len={len(returns)}, "
-                f"returns_sample={returns[:5]}, "
                 f"mean={components['mean_return']:.6f}, "
-                f"variance={components['variance']:.6f}, "
-                f"annual_perf={components['annual_performance']:.6f}, "
-                f"annual_std={components['annual_std']:.6f}, "
+                f"std_dev={components['std_dev']:.6f}, "
+                f"sharpe_base={components['sharpe_base']:.6f}, "
+                f"sharpe_annualized={components['sharpe_annualized']:.6f}, "
                 f"expected_sharpe={expected_sharpe:.6f}, "
                 f"lean_sharpe={actual_sharpe:.6f}"
             )
@@ -574,13 +583,11 @@ class TestComprehensiveStatistics:
             print(
                 "Sharpe Debug (test_all_risk_adjusted_metrics): "
                 f"equity_len={len(equity_values)}, "
-                f"equity_sample={equity_values[:3]}...{equity_values[-3:]}, "
                 f"returns_len={len(returns)}, "
-                f"returns_sample={returns[:5]}, "
                 f"mean={components['mean_return']:.6f}, "
-                f"variance={components['variance']:.6f}, "
-                f"annual_perf={components['annual_performance']:.6f}, "
-                f"annual_std={components['annual_std']:.6f}, "
+                f"std_dev={components['std_dev']:.6f}, "
+                f"sharpe_base={components['sharpe_base']:.6f}, "
+                f"sharpe_annualized={components['sharpe_annualized']:.6f}, "
                 f"expected_sharpe={expected_sharpe:.6f}, "
                 f"lean_sharpe={(summary.sharpe_ratio or 0.0):.6f}"
             )
